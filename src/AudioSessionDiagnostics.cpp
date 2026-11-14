@@ -1,6 +1,7 @@
 #include "AudioSessionDiagnostics.h"
 #include "Diagnostics.h"
 #include <windows.h>
+#include <tlhelp32.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <audiopolicy.h>
@@ -28,15 +29,35 @@ std::wstring HexHr(HRESULT hr) {
 std::wstring ExeName(DWORD pid) {
     if (!pid) return L"(system)";
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!process) return L"(process unavailable)";
-    wchar_t path[32768]{};
-    DWORD length = static_cast<DWORD>(std::size(path));
-    const BOOL success = QueryFullProcessImageNameW(process, 0, path, &length);
-    CloseHandle(process);
-    if (!success) return L"(process unavailable)";
-    std::wstring filename(path, length);
-    const auto slash = filename.find_last_of(L"\\/");
-    return slash == std::wstring::npos ? filename : filename.substr(slash + 1);
+    if (process) {
+        wchar_t path[32768]{};
+        DWORD length = static_cast<DWORD>(std::size(path));
+        const BOOL success = QueryFullProcessImageNameW(process, 0, path, &length);
+        CloseHandle(process);
+        if (success) {
+            std::wstring filename(path, length);
+            const auto slash = filename.find_last_of(L"\\/");
+            return slash == std::wstring::npos ? filename : filename.substr(slash + 1);
+        }
+    }
+    // Protected service processes (or processes inaccessible to this user)
+    // can deny OpenProcess while remaining visible in the process snapshot.
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W entry{};
+        entry.dwSize = sizeof(entry);
+        if (Process32FirstW(snapshot, &entry)) {
+            do {
+                if (entry.th32ProcessID == pid) {
+                    const std::wstring name = entry.szExeFile;
+                    CloseHandle(snapshot);
+                    return name + L" (process details restricted)";
+                }
+            } while (Process32NextW(snapshot, &entry));
+        }
+        CloseHandle(snapshot);
+    }
+    return L"(process unavailable or already exited)";
 }
 std::wstring State(AudioSessionState state) {
     switch (state) {
