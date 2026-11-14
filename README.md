@@ -1,47 +1,58 @@
 # AudioPTT
 
-A minimal native Windows utility for switching Discord's input between your microphone and desktop audio. **Early framework: audio routing is not implemented yet.**
+A native C++/Win32 prototype for feeding either microphone audio or desktop audio into Discord through VB-CABLE, without OBS.
 
-## Goal
-
-Discord (desktop or browser) stays connected to a single virtual recording endpoint (initially VB-CABLE Output). AudioPTT chooses whether that endpoint receives microphone audio or computer audio. When broadcasting, mic audio must not be forwarded. A Monitor checkbox should determine whether broadcast computer audio is also heard locally; Discord incoming voice must remain audible.
-
-| Broadcast | Monitor | Virtual mic receives | PC playback |
-|---|---|---|---|
-| Off | Either | Microphone | Normal |
-| On | Off | PC audio | Silent locally (except Discord voice) |
-| On | On | PC audio | Audible locally |
+**Development prototype — not yet verified on a Windows machine.** The current engine performs real WASAPI capture and render operations, but is not hardened for production use.
 
 ## Build
 
-Requires Visual Studio 2022 or newer with **Desktop development with C++** and the Windows SDK.
+Install Visual Studio 2022 or newer with **Desktop development with C++** and a Windows SDK, then open this folder in Visual Studio (CMake project), or build:
 
 ```powershell
 cmake -S . -B build -A x64
 cmake --build build --config Debug
+.\build\Debug\AudioPTT.exe
 ```
 
-Run `build/Debug/AudioPTT.exe`. Visual Studio can also open this repository as a CMake folder.
+The GitHub Actions workflow also compiles the application on Windows and uploads an executable build artifact when successful.
 
-## Current status
+## Test setup
 
-- Native Win32 UI with Broadcast toggle and Monitor checkbox.
-- WASAPI device enumerator for render and capture endpoints; shows device IDs and friendly names.
-- Thread-safe state model and an audio engine interface prepared for routing.
-- **No audio is transmitted yet.** The UI deliberately labels routing as not implemented.
+1. Install VB-CABLE. In **Windows Sound**, set your physical speakers/headphones as the **default output**.
+2. Set a **physical microphone** as your Windows default **communications input** (not VB-CABLE).
+3. Set Discord's **Input Device** to **CABLE Output (VB-Audio Virtual Cable)**. Keep Discord's **Output Device** set to your physical speakers/headphones.
+4. Close OBS, particularly any audio monitoring routed to VB-CABLE.
+5. Start AudioPTT. It automatically attempts microphone → **CABLE Input** on launch.
+6. First confirm mic passthrough in Discord's mic test. Then check **Monitor** and press **BROADCAST PC AUDIO**. This switches to physical-speaker loopback → CABLE Input.
 
-## Audio architecture notes
+**Do not set CABLE Input as the Windows default output for this prototype.** That would produce feedback or duplicate routing. AudioPTT detects this and refuses desktop-loopback capture.
 
-A normal Windows application cannot directly inject audio into Discord's microphone API stream. For the first implementation, select **CABLE Output (VB-Audio Virtual Cable)** as Discord's input, and write audio to the matching **CABLE Input** render endpoint. Do not confuse those names: CABLE Input is the playback endpoint, CABLE Output is the recording endpoint.
+## Current behavior
 
-WASAPI loopback capture captures audio from a render endpoint, but it does not independently reroute applications or safely mute their original output. Fully silent broadcast requires a dedicated virtual playback path (or per-application audio routing), with Discord output excluded to avoid echo. Never implement silent broadcast by muting the Windows default audio device without testing loopback behavior.
+| Broadcast | Monitor | Discord receives | Local computer audio |
+|---|---|---|---|
+| Off | Off / On | Physical microphone (forwarded) | Normal playback |
+| On | On | Desktop audio from default physical speaker output | Still audible normally |
+| On | Off | **Not implemented: button refuses mode** | Unchanged |
 
-## Implementation order
+The mic is not mixed into desktop audio in Broadcast mode, because the engine stops the microphone stream and opens desktop loopback instead. **The app does not hardware-mute the microphone; it prevents routing it to VB-CABLE.**
 
-1. Enumerate and select physical microphone, physical speakers, and cable endpoints by persistent endpoint ID.
-2. Start microphone capture and write samples to CABLE Input in Off mode, with resampling and format conversion where required.
-3. Capture PC audio (WASAPI loopback), write to CABLE Input in On mode, and gate microphone frames completely.
-4. Add a safe silent-broadcast path and optional monitor branch while preserving Discord incoming audio.
-5. Add global hotkey, tray UI, device-change handling, routing diagnostics, and error recovery.
+The microphone-to-cable and desktop-loopback-to-cable paths use WASAPI shared mode, basic stereo/mono conversion, simple linear sample-rate conversion, and 32-bit floating-point or 16-bit PCM mix formats. They are not yet performance-tuned or thoroughly tested against device resets, sleep/resume, or differing driver formats.
 
-Never silently claim broadcasting works if a cable endpoint cannot be opened or routing hasn't started. Avoid feedback loops by excluding the cable endpoint from PC audio capture.
+### Limitations to address next
+
+- **Silent desktop broadcast requires different architecture.** WASAPI loopback only copies audio already rendered to a physical device. Disabling local playback separately requires a dedicated virtual playback path and deliberate routing of application audio; do not mute the default device to simulate silence.
+- Currently uses Windows *default* devices. Device selection by endpoint ID and automatic reinitialization on device change are still needed.
+- A transient audio-driver error stops the worker; the prototype does not automatically reconnect.
+- Hotkey, system tray, device settings, visual levels, installer, and proper error telemetry are still pending.
+- Discord voice should remain directed to physical speakers; if it is captured through the same loopback, it will be broadcast too. A future version must exclude Discord from system capture.
+- No echo cancellation, noise filtering, or AGC is performed by the application.
+
+The Discord input is the **CABLE Output recording endpoint**; AudioPTT writes to the matching **CABLE Input playback endpoint**. A regular user-mode process cannot inject arbitrary PCM samples directly into Discord's internal microphone stream.
+
+## Files
+
+- `src/AudioDevices.*` — Windows capture/render endpoint discovery
+- `src/AudioEngine.*` — WASAPI capture, format conversion, sample queue, and cable rendering
+- `src/main.cpp` — tiny native Win32 interface
+- `CMakeLists.txt` — Visual Studio / x64 build definition
