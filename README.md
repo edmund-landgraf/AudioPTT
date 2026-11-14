@@ -18,6 +18,16 @@ cmake --build build --config Debug
 
 Windows CI is configured in `.github/workflows/windows-build.yml`.
 
+## Main and Logs tabs
+
+The native Win32 window now has **Main** and **Logs** tabs.
+
+**Main** shows Broadcast, Monitor, a compact live snapshot of the Windows default Console/Multimedia/Communications playback devices, physical microphone, and both VB-CABLE endpoints, plus the required Discord input setting. The app cannot read Discord's settings; its Discord-input line is an instruction, not a verified setting. When broadcasting, the Monitor output line uses the saved physical speaker name.
+
+**Logs** provides a timestamped, scrollable event history (last 400 events). It records the detected endpoints and role assignments, reasons an audio setup was blocked, switch/restore operations, WASAPI stream initialization and formats, worker startup errors, and runtime recovery. **Device IDs / diagnostics** on Main appends the full active endpoint names and IDs and opens Logs. You can use **Copy logs** to share an error report or **Clear logs** to start another test. Nothing is automatically uploaded.
+
+A blocked setup should now say *which* Windows default role is still routed through `CABLE Input`. For example, if Console or Multimedia output is already VB-CABLE, switch the Windows default output to real speakers/headphones, then press **Retry audio setup**. Do not set VB-CABLE as Windows' default before AudioPTT starts; AudioPTT changes those roles temporarily while broadcasting.
+
 ## Audio behavior
 
 | Broadcast | Monitor | Discord input (CABLE Output) | Local playback |
@@ -45,7 +55,7 @@ Windows CI is configured in `.github/workflows/windows-build.yml`.
 - If the app crashes or is force-closed while broadcasting, Windows may continue using VB-CABLE as the default audio device. **Fix manually:** Settings > System > Sound > Output > select your physical speakers.
 - The prototype does not use per-process capture; apps that ignore Windows defaults may not be captured, while Discord audio accidentally routed to VB-CABLE may be rebroadcast.
 - Microphone mode handles basic stereo/mono and 16-bit PCM/32-bit float format conversion, with simple linear resampling. Audio glitches are possible and there is no echo cancellation, AGC, or full handling of device removal.
-- No hotkey, tray icon, persisted device picker, installer, or virtual audio driver is included yet.
+- The hotkey is Ctrl+Alt+Space. A system tray icon, persisted device picker, installer, and bundled virtual audio driver are still not included.
 
 ## Code layout
 
