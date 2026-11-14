@@ -33,9 +33,12 @@ void Require(HRESULT hr, const wchar_t* step) {
     if (FAILED(hr)) {
         wchar_t text[192]{};
         swprintf_s(text, L"%ls failed: HRESULT 0x%08X", step, static_cast<unsigned>(hr));
-        // Errors in this class are Win32 ASCII labels plus HRESULTs.
-        std::wstring value(text);
-        throw std::runtime_error(std::string(value.begin(), value.end()));
+        // Our operation labels are ASCII; convert explicitly rather than
+        // narrowing wchar_t iterators (which triggers MSVC warning C4244).
+        std::string ascii;
+        for (const wchar_t ch : std::wstring(text))
+            ascii.push_back(ch <= 0x7F ? static_cast<char>(ch) : '?');
+        throw std::runtime_error(ascii);
     }
 }
 enum class Sample { Float, Pcm16 };
