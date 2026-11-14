@@ -30,7 +30,7 @@ A blocked setup should now say *which* Windows default role is still routed thro
 
 ### Windows audio-session diagnostics
 
-The **Logs** tab now includes an **Audio sessions** button. It records the Windows shared-mode playback sessions attached to the saved physical speaker endpoint and VB-CABLE Input, including active/inactive state, process executable name, PID, session label and an audio peak when the COM meter is supported. Click it while the unwanted delayed voice is audible, then again with Discord completely closed.
+The **Logs** tab now includes an **Audio sessions** button. Clicking it gives a visible completion dialog summarizing active playback sessions, updates a Last scan status line, and appends the full snapshot to Logs. It records the Windows shared-mode playback sessions attached to the saved physical speaker endpoint and VB-CABLE Input, including active/inactive state, process executable name, PID, session label and an audio peak when the COM meter is supported. When Windows denies access to a protected process, the app attempts a process-list fallback to resolve its executable name. Click it while the unwanted delayed voice is audible, then again with Discord completely closed.
 
 The **Echo Test** also records those session inventories **before, during and after** its tone. It now logs the detected tone's approximate return lag, captured-speaker RMS, nonzero frame count, and tone amplitude. These diagnostics may distinguish a Discord/browser audio session from a Windows-level `Listen to this device` monitor. **Session membership alone cannot identify who routed the echo**, and system audio services, drivers, exclusive-mode audio and device listening may not report a distinct process session.
 
