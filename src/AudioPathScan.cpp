@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <cstdio>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -282,6 +283,8 @@ AudioPathScanResult RunAudioPathScan(
         auto speakers = OpenDevice(enumerator.Get(), physicalSpeakerId, "Find physical speaker");
         LogRenderSessions(L"Full path scan / before test signal", physicalSpeakerId,
                           cableRenderId);
+        LogCaptureSessions(L"Full path scan / before test signal", physicalMicId,
+                           cableCaptureId);
 
         CaptureProbe mic(L"WEBCAM MICROPHONE");
         CaptureProbe cable(L"CABLE Output (Discord input)");
@@ -321,6 +324,8 @@ AudioPathScanResult RunAudioPathScan(
         speaker.Log();
         LogRenderSessions(L"Full path scan / after test signal", physicalSpeakerId,
                           cableRenderId);
+        LogCaptureSessions(L"Full path scan / after test signal", physicalMicId,
+                           cableCaptureId);
 
         result.micRms = mic.Rms();
         result.cableRms = cable.Rms();
