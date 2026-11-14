@@ -44,6 +44,20 @@ The app compares three frequency-specific tone windows against the physical spea
 
 **The tone is real audio sent to VB-CABLE. People in a connected Discord call may hear it.** Run this briefly when appropriate. A "no echo detected" result is not a proof of absence: quiet outputs, disconnected devices, audio format quirks, intermittent monitoring, and headset hardware sidetone may escape the test. This diagnostic is for the first troubleshooting pass and does not run automatically.
 
+### Play Sample Audio (Broadcast-only)
+
+The Main tab includes **Play Sample Audio**, which is **disabled until Broadcast is ON and running**. Clicking it uses the locally installed Windows SAPI voice to say:
+
+> "Hello, this is sample audio. We are playing sample audio."
+
+The voice is synthesized **into memory**, then rendered through a WASAPI client opened on the explicit **CABLE Input** playback endpoint, not the Windows default playback device or physical speakers. It is injected into the same VB-CABLE path that Discord uses as its input while broadcasting. The sample does not capture or mute the physical microphone. Playing does not require audio files or an Internet connection; it requires a working Windows SAPI voice.
+
+- With **Monitor checked**, AudioPTT's normal cable monitor also copies this sample to your physical speakers.
+- With **Monitor unchecked**, AudioPTT opens **no physical speaker output** for the sample. Other Discord participants should still hear it, provided Discord is using the virtual microphone (usually **Input=Default** after the Windows default switches).
+- If you still hear sample audio locally with Monitor unchecked, investigate Windows **Recording → CABLE Output → Properties → Listen → Listen to this device** or other third-party monitoring. Such an external return path can play the virtual microphone into your speakers independently of AudioPTT's checkbox.
+
+The button disables itself while the sample is playing. To prevent a partially played sample from changing destination, the Broadcast switch and Monitor checkbox are temporarily locked until playback finishes. This is a local routing/synthesis diagnostic; it cannot confirm that remote Discord participants actually received the audio.
+
 ## Audio behavior and Discord setup
 
 **Configure Discord microphone input to `Default`, not `CABLE Output`.** Leave Discord output explicitly set to physical speakers/headphones. Before starting AudioPTT, set Windows' default recording devices (including default communications input) to the physical webcam microphone, and Console/Multimedia playback defaults to physical speakers.
@@ -84,6 +98,7 @@ Discord with **Input=Default** should normally use the physical webcam microphon
 - `src/AudioDevices.*` — enumerate Windows audio devices
 - `src/AudioRouting.*` — save and switch Windows default microphone and playback devices
 - `src/AudioEngine.*` — idle engine, cable loopback monitoring, lifecycle
+- `src/AudioSample.*` — offline SAPI speech sample and direct VB-CABLE WASAPI playback
 - `CMakeLists.txt` — x64 native C++ build
 
 The output device named **CABLE Input** is the VB-CABLE playback side; Discord records from **CABLE Output**.
