@@ -7,9 +7,11 @@
 #include <thread>
 
 namespace audioptt {
-// Broadcast OFF: physical microphone -> CABLE Input; physical speakers are default.
-// Broadcast ON:  Windows default output -> CABLE Input -> Discord CABLE Output.
-// Monitor ON additionally copies the cable mix to physical speakers.
+// Broadcast OFF: fully idle. No mic capture or cable forwarding. Windows
+// defaults remain physical, so Discord with Input=Default uses the webcam.
+// Broadcast ON: Windows default capture=CABLE Output, Windows default playback
+// (console/multimedia)=CABLE Input, so Discord with Input=Default gets PC audio.
+// Monitor ON copies the cable output to local speakers; never the microphone.
 class AudioEngine {
 public:
     ~AudioEngine();
@@ -33,7 +35,7 @@ private:
     AudioRoute route_;
     bool routeCaptured_ = false; // Only touched on UI/COM thread
     bool healthAlerted_ = false;
-    // Monitor applies only to desktop broadcast. It never plays the microphone.
+    // Monitor applies only to desktop broadcast. Idle opens no streams.
     // Start enabled so the operator hears the audio being broadcast by default.
     std::atomic<bool> monitor_{true}, broadcasting_{false}, running_{false}, stop_{false};
     std::thread worker_;
