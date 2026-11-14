@@ -1,5 +1,7 @@
 #include <windows.h>
 #include <commctrl.h>
+#include <cstring>
+#include <cstdint>
 #include <objbase.h>
 #include <string>
 #include <sstream>
@@ -54,7 +56,7 @@ std::wstring Friendly(const audioptt::EndpointDetail& endpoint) {
 }
 std::wstring ShortName(const audioptt::EndpointDetail& endpoint) {
     std::wstring name = Friendly(endpoint);
-    constexpr size_t max = 51;
+    constexpr size_t max = 38;
     if (name.size() > max) name = name.substr(0, max - 3) + L"...";
     return name;
 }
@@ -69,6 +71,20 @@ void RefreshDevices() {
         };
         // These are LIVE Windows endpoints. Discord configuration cannot be
         // inspected from here; its microphone line is explicitly instructional.
+        std::wstring monitorOutput = L"(not selected)";
+        if (engine.Broadcasting()) {
+            try {
+                for (const auto& device : audioptt::EnumerateDevices()) {
+                    if (device.id == engine.PhysicalOutputId()) {
+                        monitorOutput = device.name;
+                        break;
+                    }
+                }
+            } catch (...) {}
+        } else {
+            monitorOutput = Friendly(snapshot.consoleOutput);
+        }
+        if (monitorOutput.size() > 38) monitorOutput = monitorOutput.substr(0, 35) + L"...";
         std::wstring view =
             L"Physical microphone:  " + ShortName(snapshot.microphone) +
             L"\r\nWindows default out: " + label(snapshot.consoleOutput) +
@@ -78,9 +94,8 @@ void RefreshDevices() {
             L"\r\nVB-CABLE recording:  " + ShortName(snapshot.cableCapture) +
             L"\r\nDiscord input:      set to CABLE Output in Discord" +
             L"\r\nMonitor output:     " +
-            (engine.Broadcasting() && !engine.Monitor() ? std::wstring(L"Silent (local PC audio)") :
-                (engine.Broadcasting() ? L"Saved physical speakers" :
-                 L"Normal Windows playback"));
+            (engine.Broadcasting() && !engine.Monitor() ?
+                std::wstring(L"OFF (PC silent locally)") : monitorOutput);
         if (view != lastRouteText) {
             SetWindowTextW(routeDetails, view.c_str());
             lastRouteText = std::move(view);
@@ -250,7 +265,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         AddControl(mainControls, L"BUTTON", L"Live audio settings",
                    WS_VISIBLE | BS_GROUPBOX, 28, 176, 495, 264, hwnd, instance);
         routeDetails = AddControl(mainControls, L"STATIC", L"Reading Windows audio devices...",
-                   WS_VISIBLE | SS_LEFT, 42, 198, 470, 230, hwnd, instance);
+                   WS_VISIBLE | SS_LEFTNOWORDWRAP, 42, 198, 470, 230, hwnd, instance);
         statusLabel = AddControl(mainControls, L"STATIC", L"Starting audio...",
                    WS_VISIBLE | SS_LEFT, 28, 448, 495, 44, hwnd, instance);
         AddControl(mainControls, L"BUTTON", L"Device IDs / diagnostics",
