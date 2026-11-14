@@ -13,6 +13,7 @@
 #include "AudioRouteStore.h"
 #include "Diagnostics.h"
 #include "AudioEchoTest.h"
+#include "AudioSessionDiagnostics.h"
 
 namespace {
 constexpr int kButton = 101;
@@ -23,6 +24,7 @@ constexpr int kCopyLogs = 108;
 constexpr int kClearLogs = 109;
 constexpr int kTabs = 110;
 constexpr int kEchoTest = 111;
+constexpr int kInspectSessions = 112;
 constexpr UINT kEchoTestComplete = WM_APP + 30;
 constexpr UINT_PTR kStartupTimer = 201;
 constexpr UINT_PTR kHealthTimer = 202;
@@ -165,12 +167,32 @@ void ShowDevicesInLog() {
     TabCtrl_SetCurSel(tabs, 1);
     SetPage(1);
 }
+void ShowAudioSessions() {
+    try {
+        const auto endpoints = audioptt::ReadDeviceSnapshot();
+        std::wstring speakers = engine.PhysicalOutputId();
+        if (speakers.empty()) speakers = endpoints.consoleOutput.id;
+        if (speakers == endpoints.cableRender.id)
+            audioptt::LogWarning(L"Windows default playback is VB-CABLE. The physical speaker endpoint is unknown.");
+        audioptt::LogRenderSessions(L"Manual scan from Logs tab",
+                                   speakers, endpoints.cableRender.id);
+    } catch (...) {
+        audioptt::LogError(L"Could not read Windows audio endpoints for session scan.");
+    }
+    RefreshLogs(true);
+}
 void SetupAudio(HWND hwnd) {
     audioptt::LogInfo(L"---- Audio setup / retry requested ----");
     uiProblem.clear();
     std::wstring error;
+    const bool alreadyRunning = engine.Running();
     if (engine.Start(error)) {
-        audioptt::LogInfo(L"Audio setup ready: physical microphone forwarded to VB-CABLE Input.");
+        if (alreadyRunning) {
+            audioptt::LogInfo(L"Retry: engine already running; recording endpoint and session diagnostics.");
+            ShowAudioSessions();
+        } else {
+            audioptt::LogInfo(L"Audio setup ready: physical microphone forwarded to VB-CABLE Input.");
+        }
         RefreshDevices();
         Refresh();
         return;
@@ -340,10 +362,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
                    28, 52, 495, 440, hwnd, instance, 0, WS_EX_CLIENTEDGE);
         SendMessageW(logEdit, EM_SETLIMITTEXT, 1000000, 0);
         AddControl(logControls, L"BUTTON", L"Copy logs",
-                   WS_TABSTOP | BS_PUSHBUTTON, 28, 500, 234, 34,
+                   WS_TABSTOP | BS_PUSHBUTTON, 28, 500, 154, 34,
                    hwnd, instance, kCopyLogs);
+        AddControl(logControls, L"BUTTON", L"Audio sessions",
+                   WS_TABSTOP | BS_PUSHBUTTON, 196, 500, 154, 34,
+                   hwnd, instance, kInspectSessions);
         AddControl(logControls, L"BUTTON", L"Clear logs",
-                   WS_TABSTOP | BS_PUSHBUTTON, 274, 500, 249, 34,
+                   WS_TABSTOP | BS_PUSHBUTTON, 364, 500, 159, 34,
                    hwnd, instance, kClearLogs);
         AddControl(logControls, L"STATIC",
                    L"Recent events (last 400); includes audio routing failures.",
@@ -436,6 +461,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         case kEchoTest: StartEchoTest(hwnd); return 0;
         case kRetry: if (!echoRunning) SetupAudio(hwnd); return 0;
         case kCopyLogs: CopyLogs(hwnd); return 0;
+        case kInspectSessions: ShowAudioSessions(); return 0;
         case kClearLogs: audioptt::ClearLogs(); RefreshLogs(true); return 0;
         }
         break;
