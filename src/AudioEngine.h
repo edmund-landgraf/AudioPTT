@@ -1,18 +1,29 @@
 #pragma once
 #include <atomic>
+#include <mutex>
 #include <string>
+#include <thread>
 
 namespace audioptt {
-// Routing deliberately NOT implemented; this separates GUI state from real audio operations.
-// Future Start() must only report success after all WASAPI streams have opened.
+// All COM audio objects are created and used on the worker thread.
+// Reconfigure synchronously to avoid mixing microphone and desktop packets.
 class AudioEngine {
 public:
-    void SetMonitor(bool enabled) noexcept { monitor_.store(enabled); }
+    ~AudioEngine();
+    bool Start(std::wstring& error);
+    bool SetBroadcast(bool enabled, std::wstring& error);
+    bool SetMonitor(bool enabled, std::wstring& error);
+    void Stop();
     bool Monitor() const noexcept { return monitor_.load(); }
     bool Broadcasting() const noexcept { return broadcasting_.load(); }
-    bool SetBroadcast(bool enabled, std::wstring& error);
+    bool Running() const noexcept { return running_.load(); }
+    std::wstring Status() const;
 private:
-    std::atomic<bool> monitor_{false};
-    std::atomic<bool> broadcasting_{false};
+    bool Launch(bool broadcast, std::wstring& error);
+    void Worker(bool broadcast, std::promise<std::wstring> startup);
+    std::atomic<bool> monitor_{false}, broadcasting_{false}, running_{false}, stop_{false};
+    std::thread worker_;
+    mutable std::mutex statusMutex_;
+    std::wstring status_ = L"Not started";
 };
 } // namespace audioptt
