@@ -7,9 +7,10 @@ add_executable(AudioPTT WIN32
     src/AudioDevices.cpp
     src/AudioEngine.cpp
     src/AudioRouting.cpp
+    src/AudioRouteStore.cpp
 )
 target_compile_definitions(AudioPTT PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(AudioPTT PRIVATE ole32 uuid)
+target_link_libraries(AudioPTT PRIVATE ole32 uuid advapi32)
 if(MSVC)
     target_compile_options(AudioPTT PRIVATE /W4 /permissive-)
 endif()
