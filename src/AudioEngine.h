@@ -23,6 +23,7 @@ public:
     std::wstring Status() const;
     // Saved physical speaker endpoint, even while Windows defaults point to the cable.
     std::wstring PhysicalOutputId() const { return route_.physicalOutputId; }
+    std::wstring CableRenderId() const { return route_.cableRenderId; }
     // Called periodically from the UI thread to catch stalled or failed audio routes.
     bool CheckHealth(std::wstring& alert);
 private:
