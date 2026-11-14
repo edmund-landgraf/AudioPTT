@@ -6,6 +6,7 @@ add_executable(AudioPTT WIN32
     src/main.cpp
     src/AudioDevices.cpp
     src/AudioEngine.cpp
+    src/AudioRouting.cpp
 )
 target_compile_definitions(AudioPTT PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(AudioPTT PRIVATE ole32 uuid)
