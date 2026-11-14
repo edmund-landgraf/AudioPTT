@@ -93,8 +93,10 @@ bool CaptureAudioRoute(AudioRoute& route, std::wstring& error) {
     route.consoleId = DefaultId(enumerator.Get(), eConsole);
     route.multimediaId = DefaultId(enumerator.Get(), eMultimedia);
     DeviceSnapshot snapshot;
+    bool snapshotRead = false;
     try {
         snapshot = ReadDeviceSnapshot();
+        snapshotRead = true;
         const auto fmt = [](const EndpointDetail& d) {
             return d.Present() ? d.name : std::wstring(L"(not found)");
         };
@@ -105,7 +107,7 @@ bool CaptureAudioRoute(AudioRoute& route, std::wstring& error) {
         LogInfo(L"VB-CABLE playback / CABLE Input: " + fmt(snapshot.cableRender));
         LogInfo(L"VB-CABLE recording / CABLE Output: " + fmt(snapshot.cableCapture));
     } catch (...) {
-        LogWarning(L"Could not read the complete device snapshot; using basic audio endpoint checks.");
+        LogWarning(L"Could not read the complete device snapshot; startup cannot verify the VB-CABLE recording side or microphone.");
     }
     if (route.consoleId.empty() || route.multimediaId.empty()) {
         error = L"BLOCKED: Windows Console or Multimedia default playback endpoint is missing. Select physical speakers in Windows Sound settings.";
@@ -142,6 +144,11 @@ bool CaptureAudioRoute(AudioRoute& route, std::wstring& error) {
                                               ? L"Console" : L"Multimedia");
         error = L"BLOCKED: Windows " + roles +
                 L" output is already VB-CABLE (CABLE Input). Set Windows default playback to your PHYSICAL speakers/headphones, then click Retry audio setup.";
+        LogError(error);
+        return false;
+    }
+    if (!snapshotRead) {
+        error = L"BLOCKED: Windows audio device snapshot is unavailable; cannot verify VB-CABLE and microphone safety.";
         LogError(error);
         return false;
     }
