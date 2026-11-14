@@ -58,6 +58,20 @@ The voice is synthesized **into memory**, then rendered through a WASAPI client 
 
 The button disables itself while the sample is playing. To prevent a partially played sample from changing destination, the Broadcast switch and Monitor checkbox are temporarily locked until playback finishes. This is a local routing/synthesis diagnostic; it cannot confirm that remote Discord participants actually received the audio.
 
+### Full Signal Scan (end-to-end virtual microphone diagnostic)
+
+The new **Full Signal Scan** button is enabled when AudioPTT has started, with either Broadcast ON or OFF. It injects a quiet **997 Hz calibration tone** directly into CABLE Input for a few seconds (the tone may be audible to remote Discord participants). While the tone plays, AudioPTT independently opens three read-only WASAPI capture streams:
+
+- **WEBCAM MICROPHONE:** physical capture RMS/peak; a silent mic is possible if nobody talks
+- **CABLE Output (Discord input):** capture RMS/peak and whether the unique 997 Hz test tone was received through VB-CABLE
+- **REALTEK SPEAKER LOOPBACK:** whether the same tone unexpectedly reached your physical speakers with AudioPTT Monitor OFF
+
+It also prints pre/post Windows playback **and capture** audio-session inventories, including program names/PIDs where available, and creates a concise result dialog. The scan does not change Windows defaults or start microphone monitoring. Windows can refuse some recording endpoints; such failures are reported rather than silently treated as silence.
+
+During microphone forwarding (Broadcast OFF), the AudioPTT worker also writes a **STREAM LEVELS** entry approximately every 5 seconds. It reports actual microphone input frames, silent-buffer flags, input RMS/peak, rendered frames, output RMS/peak and queue depth. Together, these separate these failure points: physical microphone silent, forwarding silent, CABLE Output silent despite injection, unexpected Realtek monitoring, or an active Discord session that does not transmit.
+
+**A VB-CABLE PASS verifies audio reached the virtual recording endpoint, not the distant Discord listener.** Keep Discord Input fixed to CABLE Output and Output to Realtek; run the scan once with Broadcast OFF and once ON. Copy the result and Logs from both runs.
+
 ## Audio behavior and Discord setup
 
 **Set Discord Input Device explicitly to `CABLE Output (VB-Audio Virtual Cable)` (NOT Default).** Set Discord Output Device explicitly to your physical speakers/headphones (e.g. Realtek). Never select VB-CABLE for Discord's output, or remote voices can be fed back into the cable.
@@ -100,8 +114,9 @@ A successful log saying audio was submitted to VB-CABLE is **not** proof that Di
 - `src/main.cpp` — Win32 window and controls
 - `src/AudioDevices.*` — enumerate Windows audio devices
 - `src/AudioRouting.*` — save and switch Windows Console/Multimedia playback defaults; legacy input recovery
-- `src/AudioEngine.*` — webcam-to-cable forwarding, exclusive desktop broadcast branch, optional local monitor, lifecycle
+- `src/AudioEngine.*` — webcam forwarding, desktop broadcast branch, optional monitor and live PCM level telemetry
 - `src/AudioSample.*` — offline SAPI speech sample and direct VB-CABLE WASAPI playback
+- `src/AudioPathScan.*` — timed injection with independent virtual-microphone, webcam and speaker capture
 - `CMakeLists.txt` — x64 native C++ build
 
 The output device named **CABLE Input** is the VB-CABLE playback side; Discord records from **CABLE Output**.
