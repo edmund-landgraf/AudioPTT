@@ -33,7 +33,9 @@ private:
     AudioRoute route_;
     bool routeCaptured_ = false; // Only touched on UI/COM thread
     bool healthAlerted_ = false;
-    std::atomic<bool> monitor_{false}, broadcasting_{false}, running_{false}, stop_{false};
+    // Monitor applies only to desktop broadcast. It never plays the microphone.
+    // Start enabled so the operator hears the audio being broadcast by default.
+    std::atomic<bool> monitor_{true}, broadcasting_{false}, running_{false}, stop_{false};
     std::thread worker_;
     mutable std::mutex statusMutex_;
     std::wstring status_ = L"Not started";
