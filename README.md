@@ -28,6 +28,14 @@ The native Win32 window now has **Main** and **Logs** tabs.
 
 A blocked setup should now say *which* Windows default role is still routed through `CABLE Input`. For example, if Console or Multimedia output is already VB-CABLE, switch the Windows default output to real speakers/headphones, then press **Retry audio setup**. Do not set VB-CABLE as Windows' default before AudioPTT starts; AudioPTT changes those roles temporarily while broadcasting.
 
+### Windows audio-session diagnostics
+
+The **Logs** tab now includes an **Audio sessions** button. It records the Windows shared-mode playback sessions attached to the saved physical speaker endpoint and VB-CABLE Input, including active/inactive state, process executable name, PID, session label and an audio peak when the COM meter is supported. Click it while the unwanted delayed voice is audible, then again with Discord completely closed.
+
+The **Echo Test** also records those session inventories **before, during and after** its tone. It now logs the detected tone's approximate return lag, captured-speaker RMS, nonzero frame count, and tone amplitude. These diagnostics may distinguish a Discord/browser audio session from a Windows-level `Listen to this device` monitor. **Session membership alone cannot identify who routed the echo**, and system audio services, drivers, exclusive-mode audio and device listening may not report a distinct process session.
+
+No microphone audio samples, recordings or process paths are saved or uploaded. The log is held in the application's memory until cleared or the application closes. As with the other diagnostic output, copied log text may include local program names, PIDs and device IDs.
+
 ### Echo Test (diagnostic only)
 
 With **Broadcast OFF**, click **Echo Test** on the Main tab. The app asks for confirmation, then plays a low-level A-B-A tone directly into the VB-CABLE playback endpoint (**CABLE Input**) while simultaneously capturing a few seconds of **WASAPI loopback from the saved physical speakers**. It does not enable microphone monitoring, change Windows default devices, or send data off the PC.
