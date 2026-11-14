@@ -1,4 +1,5 @@
 #include "AudioEngine.h"
+#include "AudioRouteStore.h"
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
@@ -21,7 +22,8 @@ namespace audioptt {
 namespace {
 using Frame = std::array<float, 2>;
 struct ComScope {
-    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    // WASAPI initialization is safest on an STA, including its first use.
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     ~ComScope() { if (SUCCEEDED(hr)) CoUninitialize(); }
 };
 void Require(HRESULT hr, const wchar_t* operation) {
@@ -48,34 +50,11 @@ bool IsCable(std::wstring value) {
     std::transform(value.begin(), value.end(), value.begin(), towupper);
     return value.find(L"CABLE") != std::wstring::npos;
 }
-ComPtr<IMMDevice> FindCableRender(IMMDeviceEnumerator* enumerator) {
-    ComPtr<IMMDeviceCollection> list;
-    Require(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &list), L"enumerate playback devices");
-    UINT count = 0;
-    Require(list->GetCount(&count), L"count playback devices");
-    for (UINT i = 0; i < count; ++i) {
-        ComPtr<IMMDevice> device;
-        if (SUCCEEDED(list->Item(i, &device))) {
-            const auto name = Name(device);
-            // VB-CABLE playback endpoint is named CABLE Input.
-            std::wstring upper = name;
-            std::transform(upper.begin(), upper.end(), upper.begin(), towupper);
-            if (upper.find(L"CABLE INPUT") != std::wstring::npos) return device;
-        }
-    }
-    throw std::runtime_error("VB-CABLE Input playback endpoint was not found");
-}
 ComPtr<IMMDevice> FindMic(IMMDeviceEnumerator* enumerator) {
     ComPtr<IMMDevice> mic;
     Require(enumerator->GetDefaultAudioEndpoint(eCapture, eCommunications, &mic), L"find default microphone");
     if (IsCable(Name(mic.Get()))) throw std::runtime_error("Default communications microphone is VB-CABLE, not a physical microphone");
     return mic;
-}
-ComPtr<IMMDevice> FindSpeakers(IMMDeviceEnumerator* enumerator) {
-    ComPtr<IMMDevice> speakers;
-    Require(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &speakers), L"find default speakers");
-    if (IsCable(Name(speakers.Get()))) throw std::runtime_error("Default Windows output is VB-CABLE. Select physical speakers first to avoid a feedback loop");
-    return speakers;
 }
 enum class SampleType { Float32, Pcm16 };
 SampleType SampleFormat(const WAVEFORMATEX* format) {
@@ -231,7 +210,10 @@ bool AudioEngine::LaunchWorker(bool broadcast, std::wstring& error) {
 }
 
 bool AudioEngine::Start(std::wstring& error) {
-    if (routeCaptured_) { error.clear(); return true; }
+    if (routeCaptured_) {
+        if (running_.load()) { error.clear(); return true; }
+        return LaunchWorker(broadcasting_.load(), error);
+    }
     if (!CaptureAudioRoute(route_, error)) {
         std::lock_guard lock(statusMutex_);
         status_ = error;
@@ -243,51 +225,69 @@ bool AudioEngine::Start(std::wstring& error) {
         return false;
     }
     broadcasting_.store(false);
+    healthAlerted_ = false;
+    // If a user already restored physical playback after a previous crash,
+    // a stale recovery snapshot no longer applies.
+    ClearRecoveryRoute();
     return true;
 }
 
 bool AudioEngine::SetBroadcast(bool enabled, std::wstring& error) {
     if (!routeCaptured_) {
-        error = L"AudioPTT is not ready. Confirm the audio devices and restart the app.";
+        error = L"AudioPTT is not ready. Check the devices and restart the app.";
         return false;
     }
     if (enabled == broadcasting_.load() && running_.load()) {
         error.clear();
         return true;
     }
-    ShutdownWorker();  // Never mix microphone samples with live desktop audio.
 
+    ShutdownWorker(); // Never mix mic audio into the desktop broadcast.
     if (enabled) {
+        // Persist BEFORE changing any system default so a crash can be recovered.
+        if (!SaveRecoveryRoute(route_, error)) {
+            std::wstring ignored;
+            LaunchWorker(false, ignored);
+            return false;
+        }
         if (!RouteDesktopToCable(route_, error)) {
+            if (!IsAudioRoutedToCable(route_)) ClearRecoveryRoute();
             std::wstring ignored;
             LaunchWorker(false, ignored);
             return false;
         }
         if (LaunchWorker(true, error)) {
             broadcasting_.store(true);
+            healthAlerted_ = false;
             return true;
         }
         std::wstring restoreError;
-        RestoreDesktopRoute(route_, restoreError);
-        std::wstring ignored;
-        LaunchWorker(false, ignored);
-        broadcasting_.store(false);
-        if (!restoreError.empty()) error += L" Also could not restore default playback: " + restoreError;
+        const bool restored = RestoreDesktopRoute(route_, restoreError);
+        if (restored) {
+            ClearRecoveryRoute();
+            broadcasting_.store(false);
+            std::wstring ignored;
+            LaunchWorker(false, ignored);
+        } else {
+            broadcasting_.store(IsAudioRoutedToCable(route_));
+            error += L" CRITICAL: playback could not be restored: " + restoreError;
+        }
         return false;
     }
 
     if (!RestoreDesktopRoute(route_, error)) {
-        std::wstring ignored;
-        LaunchWorker(true, ignored);
-        // Keep broadcasting=true if routing is still through VB-CABLE.
+        const bool stillCable = IsAudioRoutedToCable(route_);
+        broadcasting_.store(stillCable);
+        if (stillCable) {
+            std::wstring ignored;
+            LaunchWorker(true, ignored);
+        }
         return false;
     }
-    if (!LaunchWorker(false, error)) {
-        broadcasting_.store(false);
-        return false;
-    }
-    broadcasting_.store(false);
-    return true;
+    ClearRecoveryRoute();
+    broadcasting_.store(false); // Reflect actual output even if mic stream fails.
+    healthAlerted_ = false;
+    return LaunchWorker(false, error);
 }
 
 bool AudioEngine::SetMonitor(bool enabled, std::wstring& error) {
@@ -306,11 +306,37 @@ bool AudioEngine::SetMonitor(bool enabled, std::wstring& error) {
     return true;
 }
 
+bool AudioEngine::CheckHealth(std::wstring& alert) {
+    alert.clear();
+    if (!routeCaptured_ || !broadcasting_.load() || healthAlerted_) return true;
+    if (running_.load() && IsAudioRoutedToCable(route_)) return true;
+
+    healthAlerted_ = true;
+    ShutdownWorker();
+    std::wstring restoreError;
+    const bool restored = RestoreDesktopRoute(route_, restoreError);
+    if (restored) {
+        ClearRecoveryRoute();
+        broadcasting_.store(false);
+        std::wstring micError;
+        const bool micOkay = LaunchWorker(false, micError);
+        alert = L"Broadcast routing stopped unexpectedly. Windows audio output was restored.";
+        if (!micOkay) alert += L" Microphone forwarding also failed: " + micError;
+    } else {
+        alert = L"CRITICAL: Desktop broadcast failed and Windows playback could not be restored. "
+                L"Choose your physical speakers in Windows Sound settings. " + restoreError;
+    }
+    { std::lock_guard lock(statusMutex_); status_ = alert; }
+    return false;
+}
+
 void AudioEngine::Stop() {
     ShutdownWorker();
     if (routeCaptured_) {
         std::wstring error;
-        if (!RestoreDesktopRoute(route_, error) && !error.empty()) {
+        if (RestoreDesktopRoute(route_, error)) {
+            ClearRecoveryRoute();
+        } else {
             std::lock_guard lock(statusMutex_);
             status_ = L"WARNING: Windows playback was not restored: " + error;
         }
