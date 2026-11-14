@@ -85,6 +85,7 @@ float ReadSample(const BYTE* bytes, size_t offset, SampleType type) {
     return static_cast<float>(value) / 32768.0f;
 }
 void WriteSample(BYTE* bytes, size_t offset, SampleType type, float value) {
+    if (!std::isfinite(value)) value = 0.0f;
     value = std::clamp(value, -1.0f, 1.0f);
     if (type == SampleType::Float32) std::memcpy(bytes + offset * sizeof(float), &value, sizeof(float));
     else {
@@ -251,9 +252,18 @@ bool AudioEngine::SetBroadcast(bool enabled, std::wstring& error) {
             return false;
         }
         if (!RouteDesktopToCable(route_, error)) {
-            if (!IsAudioRoutedToCable(route_)) ClearRecoveryRoute();
-            std::wstring ignored;
-            LaunchWorker(false, ignored);
+            // A partially failed device switch may still leave Windows output
+            // on the cable. Never forward the mic into that live desktop mix.
+            const bool cableActive = IsAudioRoutedToCable(route_);
+            broadcasting_.store(cableActive);
+            if (!cableActive) {
+                ClearRecoveryRoute();
+                std::wstring ignored;
+                LaunchWorker(false, ignored);
+            } else {
+                healthAlerted_ = false; // Health check will attempt restoration.
+                error += L" Windows may still be sending desktop audio to VB-CABLE.";
+            }
             return false;
         }
         if (LaunchWorker(true, error)) {
