@@ -100,7 +100,7 @@ void RefreshDevices() {
         }
         if (monitorOutput.size() > 38) monitorOutput = monitorOutput.substr(0, 35) + L"...";
         std::wstring view =
-            L"Physical microphone:  " + ShortName(snapshot.microphone) +
+            L"Windows default mic:   " + ShortName(snapshot.microphone) +
             L"\r\nWindows default out: " + label(snapshot.consoleOutput) +
             L"\r\nMedia playback out:  " + label(snapshot.multimediaOutput) +
             L"\r\nWindows comms out:   " + ShortName(snapshot.communicationsOutput) +
@@ -531,7 +531,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         // Let the short diagnostic finish before freeing its worker/UI state.
         if (echoThread.joinable()) echoThread.join();
         engine.Stop();
-        if (engine.Status().find(L"WARNING: Windows playback was not restored") != std::wstring::npos) {
+        if (engine.Status().find(L"WARNING: Windows microphone/playback defaults were not restored") != std::wstring::npos) {
             audioptt::LogError(engine.Status());
             MessageBoxW(hwnd,
                 L"Windows input or output could not be restored automatically.\n"
