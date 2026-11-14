@@ -36,6 +36,7 @@ HWND statusLabel = nullptr;
 HWND routeDetails = nullptr;
 HWND logEdit = nullptr;
 HWND echoButton = nullptr;
+HWND retryButton = nullptr;
 std::thread echoThread;
 std::mutex echoMutex;
 audioptt::EchoTestResult echoResult;
@@ -214,6 +215,7 @@ void SetupAudio(HWND hwnd) {
     Refresh();
 }
 void Toggle() {
+    if (echoRunning) { audioptt::LogWarning(L"Broadcast toggle ignored during echo test."); return; }
     audioptt::LogInfo(engine.Broadcasting() ? L"STOP broadcast requested." :
                                                L"START broadcast requested.");
     std::wstring error;
@@ -254,6 +256,9 @@ void StartEchoTest(HWND hwnd) {
     if (echoThread.joinable()) echoThread.join();
     echoRunning = true;
     EnableWindow(echoButton, FALSE);
+    EnableWindow(broadcastButton, FALSE);
+    EnableWindow(monitorCheck, FALSE);
+    if (retryButton) EnableWindow(retryButton, FALSE);
     SetWindowTextW(echoButton, L"Testing...");
     const auto cableId = engine.CableRenderId();
     const auto speakerId = engine.PhysicalOutputId();
@@ -320,7 +325,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         AddControl(mainControls, L"BUTTON", L"Device IDs / diagnostics",
                    WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                    28, 500, 165, 34, hwnd, instance, kDevices);
-        AddControl(mainControls, L"BUTTON", L"Retry audio setup",
+        retryButton = AddControl(mainControls, L"BUTTON", L"Retry audio setup",
                    WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                    199, 500, 154, 34, hwnd, instance, kRetry);
         echoButton = AddControl(mainControls, L"BUTTON", L"Echo Test",
@@ -388,6 +393,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
     case kEchoTestComplete: {
         if (echoThread.joinable()) echoThread.join();
         echoRunning = false;
+        if (broadcastButton) EnableWindow(broadcastButton, TRUE);
+        if (monitorCheck) EnableWindow(monitorCheck, TRUE);
+        if (retryButton) EnableWindow(retryButton, TRUE);
         if (echoButton) {
             SetWindowTextW(echoButton, L"Echo Test");
             EnableWindow(echoButton, TRUE);
@@ -412,6 +420,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         switch (LOWORD(wp)) {
         case kButton: Toggle(); return 0;
         case kMonitor: {
+            if (echoRunning) return 0;
             std::wstring error;
             const bool enabled = SendMessageW(monitorCheck, BM_GETCHECK, 0, 0) == BST_CHECKED;
             audioptt::LogInfo(enabled ? L"Monitor enabled." : L"Monitor disabled (silent local desktop audio).");
@@ -425,7 +434,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         }
         case kDevices: ShowDevicesInLog(); return 0;
         case kEchoTest: StartEchoTest(hwnd); return 0;
-        case kRetry: SetupAudio(hwnd); return 0;
+        case kRetry: if (!echoRunning) SetupAudio(hwnd); return 0;
         case kCopyLogs: CopyLogs(hwnd); return 0;
         case kClearLogs: audioptt::ClearLogs(); RefreshLogs(true); return 0;
         }
