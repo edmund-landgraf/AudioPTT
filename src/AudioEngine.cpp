@@ -26,13 +26,40 @@ struct ComScope {
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     ~ComScope() { if (SUCCEEDED(hr)) CoUninitialize(); }
 };
+// Windows APIs use UTF-16; std::runtime_error uses a narrow string.
+// Convert explicitly instead of narrowing wchar_t to char (MSVC C4244).
+std::string ToUtf8(const std::wstring& wide) {
+    if (wide.empty()) return {};
+    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                                        wide.data(), static_cast<int>(wide.size()),
+                                        nullptr, 0, nullptr, nullptr);
+    if (size <= 0) return "Windows audio error (invalid UTF-16)";
+    std::string utf8(static_cast<size_t>(size), '\0');
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
+                           wide.data(), static_cast<int>(wide.size()),
+                           utf8.data(), size, nullptr, nullptr) != size)
+        return "Windows audio error (UTF-8 conversion failed)";
+    return utf8;
+}
+std::wstring FromUtf8(const std::string& utf8) {
+    if (utf8.empty()) return {};
+    const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                        utf8.data(), static_cast<int>(utf8.size()),
+                                        nullptr, 0);
+    if (size <= 0) return L"Error detail unavailable (invalid UTF-8)";
+    std::wstring wide(static_cast<size_t>(size), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                            utf8.data(), static_cast<int>(utf8.size()),
+                            wide.data(), size) != size)
+        return L"Error detail unavailable (UTF-16 conversion failed)";
+    return wide;
+}
 void Require(HRESULT hr, const wchar_t* operation) {
     if (FAILED(hr)) {
         wchar_t message[256]{};
         swprintf_s(message, L"%ls failed (HRESULT 0x%08X)", operation,
                    static_cast<unsigned>(hr));
-        std::wstring wide(message);
-        throw std::runtime_error(std::string(wide.begin(), wide.end()));
+        throw std::runtime_error(ToUtf8(message));
     }
 }
 std::wstring Name(IMMDevice* device) {
@@ -409,8 +436,7 @@ void AudioEngine::Worker(bool broadcast, bool monitor, std::promise<std::wstring
         running_.store(false);
     } catch (const std::exception& ex) {
         std::wstring message = L"Audio engine failed: ";
-        const std::string detail = ex.what();
-        message.append(detail.begin(), detail.end());
+        message += FromUtf8(ex.what());
         { std::lock_guard lock(statusMutex_); status_ = message; }
         running_.store(false);
         if (!signaled) startup.set_value(message);
