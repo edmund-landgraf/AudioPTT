@@ -1,4 +1,5 @@
 #pragma once
+#include "AudioRouting.h"
 #include <atomic>
 #include <future>
 #include <mutex>
@@ -6,8 +7,9 @@
 #include <thread>
 
 namespace audioptt {
-// All COM audio objects are created and used on the worker thread.
-// Reconfigure synchronously to avoid mixing microphone and desktop packets.
+// Broadcast OFF: physical microphone -> CABLE Input; physical speakers are default.
+// Broadcast ON:  Windows default output -> CABLE Input -> Discord CABLE Output.
+// Monitor ON additionally copies the cable mix to physical speakers.
 class AudioEngine {
 public:
     ~AudioEngine();
@@ -20,8 +22,11 @@ public:
     bool Running() const noexcept { return running_.load(); }
     std::wstring Status() const;
 private:
-    bool Launch(bool broadcast, std::wstring& error);
-    void Worker(bool broadcast, std::promise<std::wstring> startup);
+    bool LaunchWorker(bool broadcast, std::wstring& error);
+    void ShutdownWorker();
+    void Worker(bool broadcast, bool monitor, std::promise<std::wstring> startup);
+    AudioRoute route_;
+    bool routeCaptured_ = false; // Only touched on UI/COM thread
     std::atomic<bool> monitor_{false}, broadcasting_{false}, running_{false}, stop_{false};
     std::thread worker_;
     mutable std::mutex statusMutex_;
