@@ -226,19 +226,8 @@ void AudioEngine::ShutdownWorker() {
 
 bool AudioEngine::LaunchWorker(bool broadcast, std::wstring& error) {
     ShutdownWorker();
-    error.clear();
-    if (!broadcast) {
-        // No WASAPI streams are created in idle mode. The physical mic is
-        // available to ordinary apps; AudioPTT does not copy it to VB-CABLE.
-        { std::lock_guard lock(statusMutex_);
-          status_ = L"Idle - microphone untouched"; }
-        running_.store(true); // Engine ready, even without an audio worker.
-        LogInfo(L"Idle: microphone not captured, no cable output, no speaker monitor.");
-        LogInfo(L"Discord input must be set to Default. With Broadcast OFF, Windows "
-                L"default microphone remains the original physical microphone.");
-        return true;
-    }
-    LogInfo(L"Opening WASAPI desktop monitor worker.");
+    LogInfo(broadcast ? L"Opening WASAPI desktop monitor worker." :
+                        L"Opening WASAPI microphone forwarding worker.");
     stop_.store(false);
     std::promise<std::wstring> startup;
     auto future = startup.get_future();
@@ -256,7 +245,7 @@ bool AudioEngine::LaunchWorker(bool broadcast, std::wstring& error) {
 bool AudioEngine::Start(std::wstring& error) {
     if (routeCaptured_) {
         if (running_.load()) { error.clear(); return true; }
-        LogWarning(L"Audio routing was initialized, but the desktop worker stopped. Reinitializing.");
+        LogWarning(L"Audio worker stopped unexpectedly. Attempting restart.");
         return LaunchWorker(broadcasting_.load(), error);
     }
     LogInfo(L"Validating physical microphone, playback defaults, and VB-CABLE endpoints.");
@@ -268,7 +257,7 @@ bool AudioEngine::Start(std::wstring& error) {
     routeCaptured_ = true;
     if (!LaunchWorker(false, error)) {
         routeCaptured_ = false;
-        LogError(L"AudioPTT failed to enter idle mode: " + error);
+        LogError(L"Microphone forwarding failed; inspect microphone permissions and device format: " + error);
         return false;
     }
     broadcasting_.store(false);
@@ -289,10 +278,10 @@ bool AudioEngine::SetBroadcast(bool enabled, std::wstring& error) {
         return true;
     }
 
-    ShutdownWorker(); // AudioPTT never opens the physical microphone.
+    ShutdownWorker(); // Never mix live microphone forwarding into desktop broadcast.
     if (enabled) {
-        LogInfo(L"Broadcast transition: save recording/playback defaults, route "
-                L"default recording to CABLE Output and PC playback to CABLE Input.");
+        LogInfo(L"Broadcast transition: stop microphone forwarding; save physical playback defaults; "
+                L"route PC audio into CABLE Input. Discord remains on CABLE Output.");
         // Persist BEFORE changing any system default so a crash can be recovered.
         if (!SaveRecoveryRoute(route_, error)) {
             LogError(L"Broadcast blocked: cannot persist recovery snapshot: " + error);
@@ -301,9 +290,9 @@ bool AudioEngine::SetBroadcast(bool enabled, std::wstring& error) {
             return false;
         }
         if (!RouteDesktopToCable(route_, error)) {
-            LogError(L"Broadcast blocked: failed to switch Windows recording/playback defaults: " + error);
-            // A partially failed switch may leave recording or playback
-            // defaults on the cable. Never start a microphone stream.
+            LogError(L"Broadcast blocked: failed to switch Windows playback defaults: " + error);
+            // A partially failed playback switch may leave PC output on
+            // the cable. Never start microphone forwarding in that state.
             const bool cableActive = IsAudioRoutedToCable(route_);
             broadcasting_.store(cableActive);
             if (!cableActive) {
@@ -312,7 +301,7 @@ bool AudioEngine::SetBroadcast(bool enabled, std::wstring& error) {
                 LaunchWorker(false, ignored);
             } else {
                 healthAlerted_ = false; // Health check will attempt restoration.
-                error += L" Windows recording or playback defaults may still point to VB-CABLE.";
+                error += L" Windows playback may still point to VB-CABLE.";
             }
             return false;
         }
@@ -333,13 +322,13 @@ bool AudioEngine::SetBroadcast(bool enabled, std::wstring& error) {
             LaunchWorker(false, ignored);
         } else {
             broadcasting_.store(IsAudioRoutedToCable(route_));
-            error += L" CRITICAL: recording/playback defaults could not be restored: " + restoreError;
+            error += L" CRITICAL: physical playback defaults could not be restored: " + restoreError;
         }
         return false;
     }
 
-    LogInfo(L"Broadcast OFF requested: restore physical microphone and speaker defaults, "
-            L"then become idle without capturing or forwarding microphone audio.");
+    LogInfo(L"Broadcast OFF requested: restore physical playback defaults, then reopen "
+            L"webcam capture and forward only to VB-CABLE for Discord.");
     if (!RestoreDesktopRoute(route_, error)) {
         const bool stillCable = IsAudioRoutedToCable(route_);
         broadcasting_.store(stillCable);
@@ -357,7 +346,7 @@ bool AudioEngine::SetBroadcast(bool enabled, std::wstring& error) {
         return false;
     }
     ClearRecoveryRoute();
-    broadcasting_.store(false); // Reflect actual output even if mic stream fails.
+    broadcasting_.store(false); // Reflect actual output even if mic worker fails.
     healthAlerted_ = false;
     return LaunchWorker(false, error);
 }
@@ -408,7 +397,7 @@ bool AudioEngine::CheckHealth(std::wstring& alert) {
 }
 
 void AudioEngine::Stop() {
-    LogInfo(L"Shutting down AudioPTT and restoring previous recording/playback defaults.");
+    LogInfo(L"Shutting down AudioPTT, stopping microphone forwarding and restoring playback defaults.");
     ShutdownWorker();
     if (routeCaptured_) {
         std::wstring error;
@@ -416,7 +405,7 @@ void AudioEngine::Stop() {
             ClearRecoveryRoute();
         } else {
             std::lock_guard lock(statusMutex_);
-            status_ = L"WARNING: Windows microphone/playback defaults were not restored: " + error;
+            status_ = L"WARNING: Windows playback defaults were not restored: " + error;
         }
         routeCaptured_ = false;
     }
@@ -446,18 +435,24 @@ void AudioEngine::Worker(bool broadcast, bool monitor, std::promise<std::wstring
         ComPtr<IMMDeviceEnumerator> enumerator;
         Require(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_INPROC_SERVER,
                                  IID_PPV_ARGS(&enumerator)), L"create enumerator");
-        ComPtr<IMMDevice> cable, speaker;
-        if (!broadcast)
-            throw std::runtime_error("Microphone worker is disabled; idle must open no audio streams");
+        ComPtr<IMMDevice> cable, speaker, mic;
         Require(enumerator->GetDevice(route_.cableRenderId.c_str(), &cable),
                 L"get VB-CABLE endpoint");
-        Require(enumerator->GetDevice(route_.physicalOutputId.c_str(), &speaker),
-                L"get physical speaker endpoint");
-        LogInfo(L"Opening CABLE Input loopback capture and physical-speaker monitor. "
-                L"Physical microphone is NOT captured.");
         Stream input, output;
-        input.Open(cable.Get(), true);
-        output.Open(speaker.Get(), false);
+        if (broadcast) {
+            Require(enumerator->GetDevice(route_.physicalOutputId.c_str(), &speaker),
+                    L"get physical speaker endpoint");
+            LogInfo(L"Opening CABLE Input loopback capture and physical-speaker monitor. "
+                    L"Physical microphone is NOT captured in Broadcast.");
+            input.Open(cable.Get(), true);
+            output.Open(speaker.Get(), false);
+        } else {
+            mic = FindMic(enumerator.Get());
+            LogInfo(L"Opening webcam microphone capture and VB-CABLE rendering. "
+                    L"No physical-speaker stream is opened.");
+            input.Open(mic.Get(), false);
+            output.Open(cable.Get(), false);
+        }
         ComPtr<IAudioCaptureClient> capture;
         ComPtr<IAudioRenderClient> render;
         Require(input.client->GetService(IID_PPV_ARGS(&capture)), L"get capture service");
@@ -470,7 +465,8 @@ void AudioEngine::Worker(bool broadcast, bool monitor, std::promise<std::wstring
                 std::to_wstring(output.format->nSamplesPerSec) + L" Hz / " +
                 std::to_wstring(output.format->nChannels) + L" ch.");
         { std::lock_guard lock(statusMutex_);
-          status_ = L"Broadcast: PC audio -> default microphone + speakers"; }
+          status_ = broadcast ? L"PC audio -> Discord + speakers" :
+                                L"Webcam microphone -> VB-CABLE -> Discord"; }
         running_.store(true);
         startup.set_value(L"");
         signaled = true;
