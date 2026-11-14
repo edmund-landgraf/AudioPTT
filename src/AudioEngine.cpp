@@ -143,10 +143,15 @@ struct Stream {
 };
 void Forward(Stream& input, IAudioCaptureClient* capture,
              Stream& output, IAudioRenderClient* render,
-             std::atomic<bool>& stop) {
+             std::atomic<bool>& stop, bool microphoneMode) {
     std::deque<Frame> samples;
     double phase = 0;
     const double step = static_cast<double>(input.format->nSamplesPerSec) / output.format->nSamplesPerSec;
+    std::uint64_t capturedFrames = 0, silentFrames = 0, renderedFrames = 0;
+    double inSquares = 0.0, outSquares = 0.0;
+    double inPeak = 0.0, outPeak = 0.0;
+    size_t maxQueuedFrames = 0;
+    auto lastReport = std::chrono::steady_clock::now();
     while (!stop.load()) {
         UINT32 packet = 0;
         Require(capture->GetNextPacketSize(&packet), L"capture packet size");
@@ -166,7 +171,13 @@ void Forward(Stream& input, IAudioCaptureClient* capture,
                         : frame[0];
                 }
                 samples.push_back(frame);
+                const double mono = (static_cast<double>(frame[0]) + frame[1]) * 0.5;
+                inSquares += mono * mono;
+                inPeak = std::max(inPeak, std::abs(mono));
             }
+            capturedFrames += frames;
+            if (silent) silentFrames += frames;
+            maxQueuedFrames = std::max(maxQueuedFrames, samples.size());
             Require(capture->ReleaseBuffer(frames), L"release capture buffer");
             Require(capture->GetNextPacketSize(&packet), L"next capture packet");
         }
@@ -201,8 +212,35 @@ void Forward(Stream& input, IAudioCaptureClient* capture,
                     WriteSample(data, static_cast<size_t>(i) * output.format->nChannels + channel,
                                 output.type, value);
                 }
+                const double mono = (static_cast<double>(frame[0]) + frame[1]) * 0.5;
+                outSquares += mono * mono;
+                outPeak = std::max(outPeak, std::abs(mono));
             }
+            renderedFrames += available;
             Require(render->ReleaseBuffer(available, 0), L"release render buffer");
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastReport >= std::chrono::seconds(5)) {
+            const std::wstring from = microphoneMode ? L"WEBCAM MIC" : L"CABLE LOOPBACK";
+            const std::wstring to = microphoneMode ? L"CABLE INPUT" : L"REALTEK SPEAKERS";
+            LogInfo(L"STREAM LEVELS [" + from + L" -> " + to + L"] / 5 s: "
+                    L"captured=" + std::to_wstring(capturedFrames) +
+                    L" frames, silentFlags=" + std::to_wstring(silentFrames) +
+                    L", inputRMS=" + std::to_wstring(capturedFrames ?
+                        std::sqrt(inSquares / capturedFrames) : 0.0) +
+                    L", inputPeak=" + std::to_wstring(inPeak) +
+                    L", submitted=" + std::to_wstring(renderedFrames) +
+                    L" frames, renderRMS=" + std::to_wstring(renderedFrames ?
+                        std::sqrt(outSquares / renderedFrames) : 0.0) +
+                    L", renderPeak=" + std::to_wstring(outPeak) +
+                    L", peakQueued=" + std::to_wstring(maxQueuedFrames) + L" frames");
+            if (microphoneMode && inPeak < 0.001)
+                LogInfo(L"STREAM MIC: very low captured input in this window. "
+                        L"This may be silence, muted microphone, or the wrong input endpoint.");
+            capturedFrames = silentFrames = renderedFrames = 0;
+            inSquares = outSquares = inPeak = outPeak = 0.0;
+            maxQueuedFrames = 0;
+            lastReport = now;
         }
         Sleep(5);
     }
@@ -470,7 +508,7 @@ void AudioEngine::Worker(bool broadcast, bool monitor, std::promise<std::wstring
         running_.store(true);
         startup.set_value(L"");
         signaled = true;
-        Forward(input, capture.Get(), output, render.Get(), stop_);
+        Forward(input, capture.Get(), output, render.Get(), stop_, !broadcast);
         running_.store(false);
     } catch (const std::exception& ex) {
         std::wstring message = L"Audio engine failed: ";
