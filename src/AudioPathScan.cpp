@@ -114,6 +114,8 @@ struct CaptureProbe {
     std::unique_ptr<ToneMeter> tone;
     double sumSquares = 0.0;
     double peak = 0.0;
+    double baselineSquares = 0.0;
+    std::uint64_t baselineFrames = 0;
     std::uint64_t frames = 0;
     std::uint64_t silentFrames = 0;
     bool started = false;
@@ -148,7 +150,7 @@ struct CaptureProbe {
             return false;
         }
     }
-    void Poll(bool toneWindow) {
+    void Poll(bool toneWindow, bool baselineWindow) {
         if (!available) return;
         UINT32 pending = 0;
         Require(capture->GetNextPacketSize(&pending), "Read capture packet size");
@@ -171,6 +173,10 @@ struct CaptureProbe {
                 peak = std::max(peak, static_cast<double>(std::abs(value)));
                 sumSquares += static_cast<double>(value) * value;
                 ++frames;
+                if (baselineWindow) {
+                    baselineSquares += static_cast<double>(value) * value;
+                    ++baselineFrames;
+                }
                 if (toneWindow) tone->Add(value);
             }
             Require(capture->ReleaseBuffer(count), "Release capture packet");
@@ -178,6 +184,9 @@ struct CaptureProbe {
         }
     }
     double Rms() const { return frames ? std::sqrt(sumSquares / frames) : 0.0; }
+    double BaselineRms() const {
+        return baselineFrames ? std::sqrt(baselineSquares / baselineFrames) : 0.0;
+    }
     double Tone() const { return tone ? tone->largest : 0.0; }
     void Log() const {
         const auto name = std::wstring(label);
@@ -188,6 +197,7 @@ struct CaptureProbe {
         LogInfo(L"PATH SCAN " + name + L": frames=" + std::to_wstring(frames) +
                 L", silentFrames=" + std::to_wstring(silentFrames) +
                 L", RMS=" + std::to_wstring(Rms()) +
+                L", baselineRMS(before tone)=" + std::to_wstring(BaselineRms()) +
                 L", peak=" + std::to_wstring(peak) +
                 L", 997Hz amplitude=" + std::to_wstring(Tone()));
     }
@@ -309,15 +319,16 @@ AudioPathScanResult RunAudioPathScan(
             // Allow for WASAPI/driver buffering by sampling several 200-ms
             // windows during a long continuous injected tone.
             const bool toneWindow = seconds >= 0.60 && seconds < 2.95;
-            mic.Poll(false);
-            cable.Poll(toneWindow);
-            speaker.Poll(toneWindow);
+            const bool baselineWindow = seconds < 0.28;
+            mic.Poll(false, baselineWindow);
+            cable.Poll(toneWindow, baselineWindow);
+            speaker.Poll(toneWindow, baselineWindow);
             output.Pump();
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
-        mic.Poll(false);
-        cable.Poll(false);
-        speaker.Poll(false);
+        mic.Poll(false, false);
+        cable.Poll(false, false);
+        speaker.Poll(false, false);
         LogInfo(L"PATH SCAN render frames submitted=" + std::to_wstring(output.frames));
         mic.Log();
         cable.Log();
@@ -330,6 +341,9 @@ AudioPathScanResult RunAudioPathScan(
         result.micRms = mic.Rms();
         result.cableRms = cable.Rms();
         result.speakerRms = speaker.Rms();
+        result.micBaselineRms = mic.BaselineRms();
+        result.cableBaselineRms = cable.BaselineRms();
+        result.speakerBaselineRms = speaker.BaselineRms();
         result.cableToneAmplitude = cable.Tone();
         result.speakerToneAmplitude = speaker.Tone();
         result.cableToneDetected = cable.Tone() >= kProbeThreshold;
@@ -348,6 +362,11 @@ AudioPathScanResult RunAudioPathScan(
             LogInfo(L"PATH SCAN RESULT: speaker tone is expected with Monitor ON.");
         else
             LogInfo(L"PATH SCAN RESULT: no injected tone detected in Realtek loopback.");
+        if (broadcast && cable.available && speaker.available &&
+            result.cableBaselineRms < 0.001 && result.speakerBaselineRms > 0.005)
+            LogWarning(L"PATH SCAN: before injecting the test tone, Realtek had audio "
+                       L"but CABLE Output was almost silent. Existing browser audio may "
+                       L"still be pinned to Realtek. Play narration during scan to verify.");
 
         result.summary =
             L"VB-CABLE test: " +
@@ -362,6 +381,8 @@ AudioPathScanResult RunAudioPathScan(
             L"\nRealtek tone amplitude: " + std::to_wstring(result.speakerToneAmplitude) +
             L"\nWebcam RMS: " + std::to_wstring(result.micRms) +
             L"\nCABLE Output RMS: " + std::to_wstring(result.cableRms) +
+            L"\nPre-test cable RMS: " + std::to_wstring(result.cableBaselineRms) +
+            L"\nPre-test Realtek RMS: " + std::to_wstring(result.speakerBaselineRms) +
             L"\n\nThe scan cannot verify what Discord sends to remote listeners. "
             L"Full measurements and process sessions are in Logs.";
         LogInfo(L"==== FULL PATH SCAN COMPLETE ====");
