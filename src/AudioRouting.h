@@ -13,4 +13,6 @@ struct AudioRoute {
 bool CaptureAudioRoute(AudioRoute& route, std::wstring& error);
 bool RouteDesktopToCable(const AudioRoute& route, std::wstring& error);
 bool RestoreDesktopRoute(const AudioRoute& route, std::wstring& error);
+// True if either of the two desktop playback roles still targets the cable.
+bool IsAudioRoutedToCable(const AudioRoute& route);
 } // namespace audioptt
