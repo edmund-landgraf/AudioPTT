@@ -163,4 +163,30 @@ void LogRenderSessions(const std::wstring& context,
     LogInfo(L"Session names are clues only. Windows 'Listen to this device', drivers and "
             L"browser/device mixing may not appear as a separately identifiable session.");
 }
+
+void LogCaptureSessions(const std::wstring& context,
+                        const std::wstring& physicalMicId,
+                        const std::wstring& cableCaptureId) {
+    LogInfo(L"---- Capture audio sessions: " + context + L" ----");
+    ScopedCom com;
+    if (!com.Ready()) {
+        LogWarning(L"Capture session scan COM unavailable: " + HexHr(com.hr));
+        return;
+    }
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    const HRESULT hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr,
+                                        CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&enumerator));
+    if (FAILED(hr)) {
+        LogWarning(L"Capture session enumerator unavailable: " + HexHr(hr));
+        return;
+    }
+    Inspect(enumerator.Get(), L"WEBCAM MIC (capture sessions)", physicalMicId);
+    if (physicalMicId == cableCaptureId) {
+        LogWarning(L"Capture audio devices unexpectedly match.");
+        return;
+    }
+    Inspect(enumerator.Get(), L"CABLE OUTPUT (capture sessions)", cableCaptureId);
+    LogInfo(L"Capture sessions identify processes opening a recording endpoint, "
+            L"NOT whether Discord transmitted that audio to remote participants.");
+}
 } // namespace audioptt
