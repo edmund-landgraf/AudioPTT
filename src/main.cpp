@@ -11,6 +11,7 @@ constexpr int kMonitor = 102;
 constexpr int kDevices = 103;
 constexpr int kStatus = 104;
 constexpr UINT_PTR kTimer = 105;
+constexpr UINT_PTR kRefreshTimer = 106;
 audioptt::AudioEngine engine;
 HWND broadcastButton = nullptr;
 HWND monitorCheck = nullptr;
@@ -47,7 +48,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         broadcastButton = CreateWindowW(L"BUTTON", L"BROADCAST PC AUDIO",
                            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 20, 60, 340, 54,
                            hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kButton)), instance, nullptr);
-        monitorCheck = CreateWindowW(L"BUTTON", L"Monitor PC audio (broadcast only)",
+        monitorCheck = CreateWindowW(L"BUTTON", L"Monitor PC audio through speakers",
                            WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX, 20, 128, 350, 28,
                            hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kMonitor)), instance, nullptr);
         statusLabel = CreateWindowW(L"STATIC", L"Starting...",
@@ -59,9 +60,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         // Defer hardware initialization until the window is visible.
         SetTimer(hwnd, kTimer, 200, nullptr);
         Refresh();
+        SetTimer(hwnd, kRefreshTimer, 600, nullptr);
         return 0;
     }
     case WM_TIMER:
+        if (wp == kRefreshTimer) {
+            Refresh();
+            return 0;
+        }
         if (wp == kTimer) {
             KillTimer(hwnd, kTimer);
             std::wstring error;
@@ -119,7 +125,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
         CoUninitialize();
         return 1;
     }
-    HWND window = CreateWindowExW(0, className, L"AudioPTT - WASAPI Prototype",
+    HWND window = CreateWindowExW(0, className, L"AudioPTT - Discord Audio Router",
                                  WS_OVERLAPPEDWINDOW & ~WS_MAXIMIZEBOX & ~WS_THICKFRAME,
                                  CW_USEDEFAULT, CW_USEDEFAULT, 400, 320,
                                  nullptr, nullptr, instance, nullptr);
