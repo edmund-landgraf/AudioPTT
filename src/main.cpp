@@ -102,13 +102,13 @@ void RefreshDevices() {
             L"Physical microphone:  " + ShortName(snapshot.microphone) +
             L"\r\nWindows default out: " + label(snapshot.consoleOutput) +
             L"\r\nMedia playback out:  " + label(snapshot.multimediaOutput) +
-            L"\r\nDiscord voice out:  " + ShortName(snapshot.communicationsOutput) +
+            L"\r\nWindows comms out:   " + ShortName(snapshot.communicationsOutput) +
             L"\r\nVB-CABLE playback:   " + ShortName(snapshot.cableRender) +
             L"\r\nVB-CABLE recording:  " + ShortName(snapshot.cableCapture) +
             L"\r\nDiscord input:      set to CABLE Output in Discord" +
             L"\r\nMonitor output:     " +
-            (engine.Broadcasting() && !engine.Monitor() ?
-                std::wstring(L"OFF (PC silent locally)") : monitorOutput);
+            (!engine.Broadcasting() ? std::wstring(L"standby (mic never monitored)") :
+                (!engine.Monitor() ? std::wstring(L"OFF (PC silent locally)") : monitorOutput));
         if (view != lastRouteText) {
             SetWindowTextW(routeDetails, view.c_str());
             lastRouteText = std::move(view);
@@ -192,6 +192,7 @@ void SetupAudio(HWND hwnd) {
             ShowAudioSessions();
         } else {
             audioptt::LogInfo(L"Audio setup ready: physical microphone forwarded to VB-CABLE Input.");
+            ShowAudioSessions();
         }
         RefreshDevices();
         Refresh();
@@ -379,6 +380,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             hwnd, kHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_SPACE) != FALSE;
         if (!hotkey) audioptt::LogWarning(L"Ctrl+Alt+Space is reserved by another program.");
         audioptt::LogInfo(L"AudioPTT started. A VB-CABLE driver is required in this prototype.");
+        audioptt::LogInfo(L"Broadcast monitor defaults ON. In normal microphone mode, "
+                          L"AudioPTT never plays microphone audio to speakers.");
         audioptt::LogInfo(L"Discord input must be set manually to CABLE Output. Discord output should use physical speakers.");
         SetTimer(hwnd, kStartupTimer, 200, nullptr);
         SetTimer(hwnd, kHealthTimer, 750, nullptr);
