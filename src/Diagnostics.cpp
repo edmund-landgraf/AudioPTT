@@ -8,7 +8,7 @@ namespace {
 std::mutex logMutex;
 std::deque<std::wstring> entries;
 std::uint64_t revision = 0;
-constexpr size_t maxEntries = 400;
+constexpr size_t maxEntries = 1500; // Preserve multi-scan debug sessions and initial endpoint snapshot
 std::wstring Stamp() {
     SYSTEMTIME time{};
     GetLocalTime(&time);
