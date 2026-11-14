@@ -1,6 +1,6 @@
 # AudioPTT
 
-A small native C++/Win32 push-button PC-audio broadcaster for Discord. It stays completely idle when Broadcast is OFF: no microphone capture, forwarding, or local monitoring. Requires VB-CABLE for the prototype.
+A native C++/Win32 push-button microphone / PC-audio switch for Discord. When Broadcast is OFF, it forwards your webcam microphone to VB-CABLE; when on, it forwards PC audio instead. Discord keeps the same virtual microphone input. Requires VB-CABLE for the prototype.
 
 > **Experimental development build.** The app has compiled and the basic microphone/Broadcast device transitions were observed on Windows, but routing, echo recovery, and new diagnostics are not yet fully validated. Broadcast temporarily changes the Windows default playback device.
 
@@ -22,7 +22,7 @@ Windows CI is configured in `.github/workflows/windows-build.yml`.
 
 The native Win32 window now has **Main** and **Logs** tabs.
 
-**Main** shows Broadcast, Monitor, a compact live snapshot of the Windows default Console/Multimedia/Communications playback devices, physical microphone, and both VB-CABLE endpoints, plus the required Discord input setting. The app cannot read Discord's settings; its Discord-input line is an instruction, not a verified setting. When broadcasting, the Monitor output line uses the saved physical speaker name. Idle status explicitly means AudioPTT is doing nothing, not that your physical microphone is system-muted.
+**Main** shows Broadcast, Monitor, a compact live snapshot of the Windows default Console/Multimedia/Communications playback devices, physical microphone, and both VB-CABLE endpoints, plus the required Discord input setting. The app cannot read Discord's settings; its Discord-input line is an instruction, not a verified setting. When broadcasting, the Monitor output line uses the saved physical speaker name. The application never deliberately plays the physical microphone through your speakers; its Monitor control is for PC-audio broadcast only.
 
 **Logs** provides a timestamped, scrollable event history (last 400 events). It records the detected endpoints and role assignments, reasons an audio setup was blocked, switch/restore operations, WASAPI stream initialization and formats, worker startup errors, and runtime recovery. **Device IDs / diagnostics** on Main appends the full active endpoint names and IDs and opens Logs. You can use **Copy logs** to share an error report or **Clear logs** to start another test. Nothing is automatically uploaded.
 
@@ -38,7 +38,7 @@ No microphone audio samples, recordings or process paths are saved or uploaded. 
 
 ### Echo Test (diagnostic only)
 
-With **Broadcast OFF** (fully idle), click **Echo Test** on the Main tab. Echo Test temporarily sends a diagnostic tone into the cable even though normal idle mode does not; this is the only intentional exception. For a meaningful comparison, run it once with Discord open and again after fully closing Discord (including background desktop processes or browser tabs). The app asks for confirmation, then plays a low-level A-B-A tone directly into the VB-CABLE playback endpoint (**CABLE Input**) while simultaneously capturing a few seconds of **WASAPI loopback from the saved physical speakers**. It does not enable microphone monitoring, change Windows default devices, or send data off the PC.
+With **Broadcast OFF**, click **Echo Test** on the Main tab. The webcam microphone is normally forwarded to the cable in this mode, but AudioPTT has no intentional speaker-monitoring stream. The test adds a diagnostic tone directly to VB-CABLE and checks for an unexpected return to Realtek. For a meaningful comparison, run it once with Discord open and again after fully closing Discord (including background desktop processes or browser tabs). The app asks for confirmation, then plays a low-level A-B-A tone directly into the VB-CABLE playback endpoint (**CABLE Input**) while simultaneously capturing a few seconds of **WASAPI loopback from the saved physical speakers**. It does not enable microphone monitoring, change Windows default devices, or send data off the PC.
 
 The app compares three frequency-specific tone windows against the physical speaker recording. If the pattern reappears there, it logs an **ECHO DETECTED** warning and opens the Logs tab. That indicates some external monitoring/playback path is bringing VB-CABLE's outgoing signal back to the speakers (for example Discord's mic test or Windows' `Listen to this device`). The test cannot identify which program created the path.
 
@@ -53,41 +53,44 @@ The Main tab includes **Play Sample Audio**, which is **disabled until Broadcast
 The voice is synthesized **into memory**, then rendered through a WASAPI client opened on the explicit **CABLE Input** playback endpoint, not the Windows default playback device or physical speakers. It is injected into the same VB-CABLE path that Discord uses as its input while broadcasting. The sample does not capture or mute the physical microphone. Playing does not require audio files or an Internet connection; it requires a working Windows SAPI voice.
 
 - With **Monitor checked**, AudioPTT's normal cable monitor also copies this sample to your physical speakers.
-- With **Monitor unchecked**, AudioPTT opens **no physical speaker output** for the sample. Other Discord participants should still hear it, provided Discord is using the virtual microphone (usually **Input=Default** after the Windows default switches).
+- With **Monitor unchecked**, AudioPTT opens **no physical speaker output** for the sample. Other Discord participants should still hear it, provided Discord has **Input=CABLE Output** explicitly selected.
 - If you still hear sample audio locally with Monitor unchecked, investigate Windows **Recording → CABLE Output → Properties → Listen → Listen to this device** or other third-party monitoring. Such an external return path can play the virtual microphone into your speakers independently of AudioPTT's checkbox.
 
 The button disables itself while the sample is playing. To prevent a partially played sample from changing destination, the Broadcast switch and Monitor checkbox are temporarily locked until playback finishes. This is a local routing/synthesis diagnostic; it cannot confirm that remote Discord participants actually received the audio.
 
 ## Audio behavior and Discord setup
 
-**Configure Discord microphone input to `Default`, not `CABLE Output`.** Leave Discord output explicitly set to physical speakers/headphones. Before starting AudioPTT, set Windows' default recording devices (including default communications input) to the physical webcam microphone, and Console/Multimedia playback defaults to physical speakers.
+**Set Discord Input Device explicitly to `CABLE Output (VB-Audio Virtual Cable)` (NOT Default).** Set Discord Output Device explicitly to your physical speakers/headphones (e.g. Realtek). Never select VB-CABLE for Discord's output, or remote voices can be fed back into the cable.
 
-| AudioPTT state | Windows default microphone | Windows playback | AudioPTT audio streams |
-|---|---|---|---|
-| Idle / Broadcast OFF | Your physical webcam microphone | Physical speakers | **None.** Does not capture, mute, or forward the mic |
-| Broadcast ON + Monitor unchecked | **CABLE Output** | **CABLE Input** | No local monitor (PC audio reaches cable through Windows defaults) |
-| Broadcast ON + Monitor checked (default) | **CABLE Output** | **CABLE Input** | Copies VB-CABLE PC audio to saved physical speakers |
+AudioPTT owns the microphone-to-cable feed. This avoids relying on Discord/browser WebRTC to switch an already-open microphone stream when a Windows default changes.
 
-Discord with **Input=Default** should normally use the physical webcam microphone while AudioPTT is idle, then receive PC audio from CABLE Output while Broadcast is active, and return to the webcam after Broadcast stops. The app uses an undocumented Windows default-device policy API to switch all three capture roles (Console/Multimedia/Communications), and Console/Multimedia playback roles. It never opens the webcam microphone itself.
+| Mode | What AudioPTT sends into CABLE Input | What you hear locally |
+|---|---|---|
+| Broadcast OFF | Webcam microphone forwarded into VB-CABLE | Normal physical speaker audio; **no mic monitoring from AudioPTT** |
+| Broadcast ON, Monitor unchecked | PC audio from apps following the Windows Console/Multimedia playback default | No speaker monitor stream from AudioPTT; apps explicitly bound to Realtek can still play there |
+| Broadcast ON, Monitor checked (default) | Same PC audio | Extra local copy of VB-CABLE mix through saved speakers |
 
-**Caution:** Some versions of Discord and other calling applications retain an already-open input device even after Windows changes the default. The Windows setting itself will switch, but whether an *active Discord call* follows automatically must be tested. In Discord, select Input Device=`Default`, not the explicit physical mic or explicit CABLE Output, and restart/reselect the input if Discord does not follow the new default. AudioPTT cannot guarantee switching Discord's internal device setting.
+Windows default **microphone/recording devices are not changed** by this build. During Broadcast the webcam forwarding stream is stopped before changing playback defaults, so it never mixes into desktop audio. When Broadcast ends, playback defaults are restored and webcam forwarding resumes. Monitor controls **PC-audio playback only**, not webcam audio.
 
-**The physical microphone is not system-muted by AudioPTT.** Windows continues to allow other applications to use it, and Discord can use it directly while idle. During Broadcast, the Windows default input becomes the virtual microphone, but an app that explicitly selected the physical microphone could still access it. Monitor only controls the optional local copy of *computer* audio; it is checked by default and never monitors the physical microphone.
+**Known limitation:** Some running applications, including browser tabs and Discord itself, hold onto a physical playback endpoint or have a per-app output choice. Changing the Windows playback default may not redirect existing Chrome/other browser audio into CABLE Input. Discord itself should remain on physical speakers. If a browser carries both Discord and narration, changing its audio route may also rebroadcast the voices of other callers. Test the direct sample first (which bypasses browser routing), then isolate the narration application's output.
 
-## Test setup
+**Known echo:** A Windows `CABLE Output` recording device with `Listen to this device` enabled can independently replay the virtual mic through Realtek even with AudioPTT Monitor OFF. The audio session logs can show such a Windows service session. Disable recording-device Listen and ensure Discord isn't running its microphone test.
 
-1. Install VB-CABLE and select the physical webcam microphone as Windows' default input and default communications input. Set physical speakers as default output. Prefer physical speakers as default communications output too.
-2. Set **Discord Input=Default** and explicitly set **Discord Output=physical speakers/headphones**.
-3. Start AudioPTT. Verify the status reads **Idle - microphone untouched**. Discord should hear your microphone normally through Windows' default input.
-4. Press **BROADCAST PC AUDIO**. AudioPTT saves the prior default input/output roles (with crash-recovery data), sets recording defaults to **CABLE Output** and console/multimedia playback to **CABLE Input**. It does not capture your microphone. Discord should now hear PC audio instead of your voice, subject to its response to a default-device change.
-5. With Monitor checked, you also hear the PC audio through physical speakers. Turn Broadcast OFF to restore your original Windows microphone and speaker defaults and return AudioPTT to complete idle.
-6. If the echo returns, ensure that Windows Recording → CABLE Output → Properties → Listen → **Listen to this device** is **unchecked**; a Windows or third-party monitoring path can still feed the cable into speakers independently of AudioPTT.
+## Two-computer test
+
+1. In Discord on the broadcasting computer, set **Input=CABLE Output** explicitly, **Output=Realtek Speakers** explicitly; leave Discord recording processing/noise suppression off initially. Use a second computer in the same voice call to hear the result.
+2. Close/restart AudioPTT after updating to this build. With **Broadcast OFF**, speak normally. The remote computer should hear the webcam microphone, which AudioPTT now forwards into CABLE Input. If not, inspect the Windows **Recording → CABLE Output** input level meter while speaking; a moving meter means the cable is receiving audio and Discord/browser permission/processing is the next suspect.
+3. With **Broadcast ON**, click **Play Sample Audio**. This directly renders an offline sample voice to CABLE Input, independent of browser playback. The remote computer should hear it regardless of whether Monitor is checked. With Monitor unchecked, AudioPTT sends no audio to the physical speakers.
+4. If direct sample works remotely but browser narration doesn't, inspect Windows **Volume Mixer** and the narration browser/tab's *actual* output device. The current build only redirects apps that follow Windows playback defaults. If the CABLE Output meter stays flat during direct sample, investigate the VB-CABLE render/capture pair and driver status before changing Discord.
+5. Stop Broadcast and verify the webcam mic automatically resumes at the other computer. Check that ordinary Windows playback is restored.
+
+A successful log saying audio was submitted to VB-CABLE is **not** proof that Discord received it. The Discord/browser and VB-CABLE recording level meter are independent checkpoints.
 
 ## Important limitations
 
 - **Windows default-device switching is currently implemented through an undocumented COM interface (PolicyConfig).** It may not work on all Windows versions. If switching fails, the program should report an error.
 - Some applications keep playing to an explicitly selected device or cached audio session even after Windows' default changes. Silent mode therefore applies only to audio actually routed through the virtual cable; it does **not** guarantee a completely silent PC.
-- If the app crashes or is force-closed while broadcasting, Windows may continue using VB-CABLE as the default **microphone and playback device**. **Fix manually:** Settings > System > Sound > Input > select your physical microphone; Output > select your physical speakers. Normal restart should offer restoration using the saved route.
+- If the app crashes or is force-closed while broadcasting, Windows may continue using VB-CABLE as the default **playback device**. **Fix manually:** Settings > System > Sound > Output > select your physical speakers. An older build may also have changed your Windows microphone default; check Input too if transitioning from that build. Normal restart should offer recovery using the saved route.
 - The prototype does not use per-process capture; apps that ignore Windows defaults may not be captured, while Discord audio accidentally routed to VB-CABLE may be rebroadcast.
 - The monitor stream handles basic stereo/mono and 16-bit PCM/32-bit float format conversion, with simple linear resampling. Audio glitches are possible and there is no echo cancellation, AGC, or full handling of device removal.
 - The hotkey is Ctrl+Alt+Space. A system tray icon, persisted device picker, installer, and bundled virtual audio driver are still not included.
@@ -96,8 +99,8 @@ Discord with **Input=Default** should normally use the physical webcam microphon
 
 - `src/main.cpp` — Win32 window and controls
 - `src/AudioDevices.*` — enumerate Windows audio devices
-- `src/AudioRouting.*` — save and switch Windows default microphone and playback devices
-- `src/AudioEngine.*` — idle engine, cable loopback monitoring, lifecycle
+- `src/AudioRouting.*` — save and switch Windows Console/Multimedia playback defaults; legacy input recovery
+- `src/AudioEngine.*` — webcam-to-cable forwarding, exclusive desktop broadcast branch, optional local monitor, lifecycle
 - `src/AudioSample.*` — offline SAPI speech sample and direct VB-CABLE WASAPI playback
 - `CMakeLists.txt` — x64 native C++ build
 
