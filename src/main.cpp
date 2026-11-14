@@ -106,9 +106,9 @@ void RefreshDevices() {
             L"\r\nWindows comms out:   " + ShortName(snapshot.communicationsOutput) +
             L"\r\nVB-CABLE playback:   " + ShortName(snapshot.cableRender) +
             L"\r\nVB-CABLE recording:  " + ShortName(snapshot.cableCapture) +
-            L"\r\nDiscord input:      set to CABLE Output in Discord" +
+            L"\r\nDiscord input:      choose Default in Discord" +
             L"\r\nMonitor output:     " +
-            (!engine.Broadcasting() ? std::wstring(L"standby (mic never monitored)") :
+            (!engine.Broadcasting() ? std::wstring(L"idle (no monitor stream)") :
                 (!engine.Monitor() ? std::wstring(L"OFF (PC silent locally)") : monitorOutput));
         if (view != lastRouteText) {
             SetWindowTextW(routeDetails, view.c_str());
@@ -250,7 +250,7 @@ void SetupAudio(HWND hwnd) {
             audioptt::LogInfo(L"Retry: engine already running; recording endpoint and session diagnostics.");
             ShowAudioSessions();
         } else {
-            audioptt::LogInfo(L"Audio setup ready: physical microphone forwarded to VB-CABLE Input.");
+            audioptt::LogInfo(L"Audio setup ready: IDLE. No microphone capture or VB-CABLE output. Discord Input=Default uses physical mic.");
             ShowAudioSessions();
         }
         RefreshDevices();
@@ -260,19 +260,19 @@ void SetupAudio(HWND hwnd) {
     if (!error.empty()) audioptt::LogError(L"Startup blocked: " + error);
 
     // Offer recovery only when there is a saved previous route AND one of the
-    // Windows output roles still selects its cable endpoint.
+    // Windows playback or recording roles still select VB-CABLE.
     audioptt::AudioRoute saved;
     if (audioptt::LoadRecoveryRoute(saved) &&
         audioptt::IsAudioRoutedToCable(saved)) {
         audioptt::LogWarning(L"Previous session left a recoverable VB-CABLE default output.");
         const int answer = MessageBoxW(hwnd,
-            L"AudioPTT found a saved physical-speaker route from an earlier session.\n"
-            L"Windows is still sending audio to VB-CABLE.\n\n"
-            L"Restore the previous speakers now?",
-            L"AudioPTT - Restore audio output",
+            L"AudioPTT found saved microphone and speaker defaults from an earlier session.\n"
+            L"Windows still uses VB-CABLE as a default input or output.\n\n"
+            L"Restore the previous microphone and speakers now?",
+            L"AudioPTT - Restore audio devices",
             MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON1);
         if (answer == IDYES) {
-            audioptt::LogInfo(L"Recovery approved: restoring saved Windows playback defaults.");
+            audioptt::LogInfo(L"Recovery approved: restoring saved Windows microphone and playback defaults.");
             std::wstring restoreError;
             if (audioptt::RestoreDesktopRoute(saved, restoreError)) {
                 audioptt::ClearRecoveryRoute();
@@ -307,7 +307,7 @@ void Toggle() {
     } else {
         uiProblem.clear();
         audioptt::LogInfo(engine.Broadcasting() ? L"Desktop audio broadcast active." :
-                                                   L"Microphone mode restored.");
+                                                   L"Idle restored; physical microphone is available to Discord.");
     }
     RefreshDevices();
     Refresh();
@@ -316,14 +316,14 @@ void StartEchoTest(HWND hwnd) {
     if (echoRunning) return;
     if (engine.Broadcasting()) {
         MessageBoxW(hwnd,
-            L"Run this diagnostic with Broadcast OFF, so a speaker return is unexpected.",
+            L"Run this diagnostic with Broadcast OFF, so a VB-CABLE speaker return is unexpected.",
             L"Echo Test", MB_OK | MB_ICONINFORMATION);
         return;
     }
     if (!engine.Running() || engine.CableRenderId().empty() ||
         engine.PhysicalOutputId().empty()) {
-        audioptt::LogWarning(L"Echo test blocked: microphone mode is not running or endpoint IDs are unavailable.");
-        MessageBoxW(hwnd, L"Start the microphone passthrough first, then retry the Echo Test.",
+        audioptt::LogWarning(L"Echo test blocked: engine is not ready or endpoint IDs are unavailable.");
+        MessageBoxW(hwnd, L"AudioPTT must finish initializing before running Echo Test.",
                     L"Echo Test", MB_OK | MB_ICONWARNING);
         return;
     }
@@ -344,7 +344,7 @@ void StartEchoTest(HWND hwnd) {
     SetWindowTextW(echoButton, L"Testing...");
     const auto cableId = engine.CableRenderId();
     const auto speakerId = engine.PhysicalOutputId();
-    audioptt::LogInfo(L"Echo test requested (Broadcast OFF); checking for unexpected mic return.");
+    audioptt::LogInfo(L"Echo test requested (IDLE); checking unexpected VB-CABLE-to-speaker return.");
     echoThread = std::thread([hwnd, cableId, speakerId]() {
         const auto result = audioptt::RunEchoTest(cableId, speakerId);
         {
@@ -390,7 +390,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         item.pszText = const_cast<LPWSTR>(L"Logs");
         TabCtrl_InsertItem(tabs, 1, &item);
 
-        AddControl(mainControls, L"STATIC", L"AudioPTT  -  Mic / PC audio switch",
+        AddControl(mainControls, L"STATIC", L"AudioPTT  -  PC audio broadcast (idle until activated)",
                    WS_VISIBLE, 28, 51, 485, 24, hwnd, instance);
         broadcastButton = AddControl(mainControls, L"BUTTON", L"BROADCAST PC AUDIO",
                    WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 28, 78, 495, 55,
@@ -439,9 +439,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             hwnd, kHotkey, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, VK_SPACE) != FALSE;
         if (!hotkey) audioptt::LogWarning(L"Ctrl+Alt+Space is reserved by another program.");
         audioptt::LogInfo(L"AudioPTT started. A VB-CABLE driver is required in this prototype.");
-        audioptt::LogInfo(L"Broadcast monitor defaults ON. In normal microphone mode, "
-                          L"AudioPTT never plays microphone audio to speakers.");
-        audioptt::LogInfo(L"Discord input must be set manually to CABLE Output. Discord output should use physical speakers.");
+        audioptt::LogInfo(L"Broadcast monitor defaults ON. Idle mode has no microphone capture; "
+                          L"ordinary calls use the microphone directly.");
+        audioptt::LogInfo(L"Set Discord Input=DEFAULT to follow Windows microphone switching. Discord Output=physical speakers.");
         SetTimer(hwnd, kStartupTimer, 200, nullptr);
         SetTimer(hwnd, kHealthTimer, 750, nullptr);
         RefreshDevices();
@@ -534,8 +534,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         if (engine.Status().find(L"WARNING: Windows playback was not restored") != std::wstring::npos) {
             audioptt::LogError(engine.Status());
             MessageBoxW(hwnd,
-                L"Windows output could not be restored automatically.\n"
-                L"Settings > System > Sound > select your physical speakers/headphones.",
+                L"Windows input or output could not be restored automatically.\n"
+                L"Settings > System > Sound > restore physical microphone and speakers.",
                 L"AudioPTT - Restore audio output", MB_OK | MB_ICONWARNING);
         }
         DestroyWindow(hwnd);
