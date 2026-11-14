@@ -37,6 +37,7 @@ HWND monitorCheck = nullptr;
 HWND statusLabel = nullptr;
 HWND routeDetails = nullptr;
 HWND logEdit = nullptr;
+HWND sessionScanLabel = nullptr;
 HWND echoButton = nullptr;
 HWND retryButton = nullptr;
 std::thread echoThread;
@@ -167,19 +168,77 @@ void ShowDevicesInLog() {
     TabCtrl_SetCurSel(tabs, 1);
     SetPage(1);
 }
-void ShowAudioSessions() {
+void ShowAudioSessions(bool showResult = false) {
+    audioptt::LogInfo(showResult ? L"User clicked Audio sessions: scanning playback processes."
+                               : L"Automatic audio-session startup snapshot.");
+    if (sessionScanLabel) SetWindowTextW(sessionScanLabel, L"Scanning Windows audio sessions...");
     try {
         const auto endpoints = audioptt::ReadDeviceSnapshot();
         std::wstring speakers = engine.PhysicalOutputId();
         if (speakers.empty()) speakers = endpoints.consoleOutput.id;
         if (speakers == endpoints.cableRender.id)
-            audioptt::LogWarning(L"Windows default playback is VB-CABLE. The physical speaker endpoint is unknown.");
+            audioptt::LogWarning(L"Windows default playback is VB-CABLE. Physical speaker endpoint unknown.");
+
         audioptt::LogRenderSessions(L"Manual scan from Logs tab",
                                    speakers, endpoints.cableRender.id);
+
+        // The logging helper already writes one entry per session. Turn the
+        // newest snapshot into a brief, visible result instead of making the
+        // user hunt through a growing log for newly appended rows.
+        const std::wstring log = audioptt::LogText();
+        const std::wstring marker = L"---- Audio session snapshot: Manual scan from Logs tab ----";
+        const auto start = log.rfind(marker);
+        unsigned speakerActive = 0;
+        unsigned cableActive = 0;
+        unsigned shown = 0;
+        std::wstring activeRows;
+        if (start != std::wstring::npos) {
+            size_t pos = start;
+            while (pos < log.size()) {
+                const size_t end = log.find(L'\n', pos);
+                const size_t stop = end == std::wstring::npos ? log.size() : end;
+                const std::wstring line = log.substr(pos, stop - pos);
+                const size_t speaker = line.find(L"PHYSICAL SPEAKERS: [active]");
+                const size_t cable = line.find(L"VB-CABLE INPUT: [active]");
+                if (speaker != std::wstring::npos) ++speakerActive;
+                if (cable != std::wstring::npos) ++cableActive;
+                const size_t from = speaker != std::wstring::npos ? speaker : cable;
+                if (from != std::wstring::npos && shown < 8) {
+                    activeRows += line.substr(from);
+                    activeRows += L"\n";
+                    ++shown;
+                }
+                if (end == std::wstring::npos) break;
+                pos = end + 1;
+            }
+        }
+        const std::wstring status =
+            L"Last scan: " + std::to_wstring(speakerActive) +
+            L" active speaker, " + std::to_wstring(cableActive) +
+            L" active VB-CABLE session(s).";
+        if (sessionScanLabel) SetWindowTextW(sessionScanLabel, status.c_str());
+        audioptt::LogInfo(L"Audio session scan finished: " + status);
+        RefreshLogs(true);
+        if (showResult) {
+            std::wstring report = status + L"\n\n";
+            if (activeRows.empty())
+                report += L"No active playback sessions reported.\n";
+            else
+                report += activeRows;
+            report += L"\nFull details are in the Logs tab. "
+                      L"An active process is a clue, not proof it caused the echo.";
+            MessageBoxW(GetParent(logEdit), report.c_str(),
+                        L"AudioPTT - Audio Session Scan", MB_OK | MB_ICONINFORMATION);
+        }
     } catch (...) {
         audioptt::LogError(L"Could not read Windows audio endpoints for session scan.");
+        if (sessionScanLabel)
+            SetWindowTextW(sessionScanLabel, L"Session scan failed. See Logs.");
+        RefreshLogs(true);
+        if (showResult)
+            MessageBoxW(GetParent(logEdit), L"Audio session scan failed. See Logs.",
+                        L"AudioPTT", MB_OK | MB_ICONWARNING);
     }
-    RefreshLogs(true);
 }
 void SetupAudio(HWND hwnd) {
     audioptt::LogInfo(L"---- Audio setup / retry requested ----");
@@ -371,8 +430,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         AddControl(logControls, L"BUTTON", L"Clear logs",
                    WS_TABSTOP | BS_PUSHBUTTON, 364, 500, 159, 34,
                    hwnd, instance, kClearLogs);
-        AddControl(logControls, L"STATIC",
-                   L"Recent events (last 400); includes audio routing failures.",
+        sessionScanLabel = AddControl(logControls, L"STATIC",
+                   L"Audio sessions: not scanned yet.",
                    0, 28, 545, 495, 20, hwnd, instance);
 
         SetPage(0);
@@ -464,7 +523,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         case kEchoTest: StartEchoTest(hwnd); return 0;
         case kRetry: if (!echoRunning) SetupAudio(hwnd); return 0;
         case kCopyLogs: CopyLogs(hwnd); return 0;
-        case kInspectSessions: ShowAudioSessions(); return 0;
+        case kInspectSessions: ShowAudioSessions(true); return 0;
         case kClearLogs: audioptt::ClearLogs(); RefreshLogs(true); return 0;
         }
         break;
