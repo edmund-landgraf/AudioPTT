@@ -21,12 +21,15 @@ public:
     bool Broadcasting() const noexcept { return broadcasting_.load(); }
     bool Running() const noexcept { return running_.load(); }
     std::wstring Status() const;
+    // Called periodically from the UI thread to catch stalled or failed audio routes.
+    bool CheckHealth(std::wstring& alert);
 private:
     bool LaunchWorker(bool broadcast, std::wstring& error);
     void ShutdownWorker();
     void Worker(bool broadcast, bool monitor, std::promise<std::wstring> startup);
     AudioRoute route_;
     bool routeCaptured_ = false; // Only touched on UI/COM thread
+    bool healthAlerted_ = false;
     std::atomic<bool> monitor_{false}, broadcasting_{false}, running_{false}, stop_{false};
     std::thread worker_;
     mutable std::mutex statusMutex_;
