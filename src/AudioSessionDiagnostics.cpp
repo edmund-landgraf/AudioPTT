@@ -4,8 +4,10 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <audiopolicy.h>
+#include <endpointvolume.h>
 #include <wrl/client.h>
 #include <algorithm>
+#include <iterator>
 #include <string>
 
 using Microsoft::WRL::ComPtr;
@@ -14,6 +16,8 @@ namespace audioptt {
 namespace {
 struct ScopedCom {
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    // If called from the STA Win32 UI thread, COM is already usable.
+    bool Ready() const { return SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE; }
     ~ScopedCom() { if (SUCCEEDED(hr)) CoUninitialize(); }
 };
 std::wstring HexHr(HRESULT hr) {
@@ -118,7 +122,7 @@ void LogRenderSessions(const std::wstring& context,
                        const std::wstring& cableRenderId) {
     LogInfo(L"---- Audio session snapshot: " + context + L" ----");
     ScopedCom com;
-    if (FAILED(com.hr)) {
+    if (!com.Ready()) {
         LogWarning(L"Session snapshot: COM unavailable " + HexHr(com.hr));
         return;
     }
