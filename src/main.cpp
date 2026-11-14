@@ -2,6 +2,7 @@
 #include <commctrl.h>
 #include <cstring>
 #include <cstdint>
+#include <atomic>
 #include <mutex>
 #include <thread>
 #include <objbase.h>
@@ -13,6 +14,7 @@
 #include "AudioRouteStore.h"
 #include "Diagnostics.h"
 #include "AudioEchoTest.h"
+#include "AudioSample.h"
 #include "AudioSessionDiagnostics.h"
 
 namespace {
@@ -25,6 +27,8 @@ constexpr int kClearLogs = 109;
 constexpr int kTabs = 110;
 constexpr int kEchoTest = 111;
 constexpr int kInspectSessions = 112;
+constexpr int kSampleAudio = 113;
+constexpr UINT kSampleAudioComplete = WM_APP + 31;
 constexpr UINT kEchoTestComplete = WM_APP + 30;
 constexpr UINT_PTR kStartupTimer = 201;
 constexpr UINT_PTR kHealthTimer = 202;
@@ -39,11 +43,18 @@ HWND routeDetails = nullptr;
 HWND logEdit = nullptr;
 HWND sessionScanLabel = nullptr;
 HWND echoButton = nullptr;
+HWND sampleButton = nullptr;
 HWND retryButton = nullptr;
 std::thread echoThread;
 std::mutex echoMutex;
 audioptt::EchoTestResult echoResult;
 bool echoRunning = false;
+bool sampleRunning = false;
+std::atomic<bool> sampleCancel{false};
+std::thread sampleThread;
+std::mutex sampleMutex;
+bool sampleSucceeded = false;
+std::wstring sampleError;
 std::vector<HWND> mainControls;
 std::vector<HWND> logControls;
 std::wstring uiProblem;
@@ -134,6 +145,15 @@ void RefreshLogs(bool force = false) {
     SendMessageW(logEdit, EM_SCROLLCARET, 0, 0);
 }
 void Refresh() {
+    // Sample playback is explicitly unavailable until Broadcast is ON. The
+    // speaker monitor checkbox does not alter whether Discord receives audio.
+    if (sampleButton)
+        EnableWindow(sampleButton, engine.Broadcasting() && engine.Running() &&
+                                  !echoRunning && !sampleRunning);
+    if (broadcastButton)
+        EnableWindow(broadcastButton, !echoRunning && !sampleRunning);
+    if (monitorCheck)
+        EnableWindow(monitorCheck, !echoRunning && !sampleRunning);
     if (broadcastButton)
         SetWindowTextW(broadcastButton, engine.Broadcasting() ?
                        L"STOP BROADCAST" : L"BROADCAST PC AUDIO");
@@ -297,7 +317,10 @@ void SetupAudio(HWND hwnd) {
     Refresh();
 }
 void Toggle() {
-    if (echoRunning) { audioptt::LogWarning(L"Broadcast toggle ignored during echo test."); return; }
+    if (echoRunning || sampleRunning) {
+        audioptt::LogWarning(L"Broadcast toggle ignored while audio diagnostic or sample is playing.");
+        return;
+    }
     audioptt::LogInfo(engine.Broadcasting() ? L"STOP broadcast requested." :
                                                L"START broadcast requested.");
     std::wstring error;
@@ -313,7 +336,7 @@ void Toggle() {
     Refresh();
 }
 void StartEchoTest(HWND hwnd) {
-    if (echoRunning) return;
+    if (echoRunning || sampleRunning) return;
     if (engine.Broadcasting()) {
         MessageBoxW(hwnd,
             L"Run this diagnostic with Broadcast OFF, so a VB-CABLE speaker return is unexpected.",
@@ -352,6 +375,34 @@ void StartEchoTest(HWND hwnd) {
             echoResult = result;
         }
         PostMessageW(hwnd, kEchoTestComplete, 0, 0);
+    });
+}
+void StartSampleAudio(HWND hwnd) {
+    if (sampleRunning || echoRunning) return;
+    if (!engine.Broadcasting() || !engine.Running() || engine.CableRenderId().empty()) {
+        audioptt::LogWarning(L"Sample Audio blocked: Broadcast must be ON and route ready.");
+        MessageBoxW(hwnd, L"Turn on BROADCAST PC AUDIO first.",
+                    L"AudioPTT - Sample Audio", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (sampleThread.joinable()) sampleThread.join();
+    sampleCancel.store(false);
+    sampleRunning = true;
+    audioptt::LogInfo(L"Sample Audio requested: speak into VB-CABLE only. "
+                      L"Local audio follows the Broadcast Monitor checkbox.");
+    SetWindowTextW(sampleButton, L"Playing sample...");
+    Refresh();
+    const auto cableRenderId = engine.CableRenderId();
+    sampleThread = std::thread([hwnd, cableRenderId]() {
+        std::wstring error;
+        const bool succeeded = audioptt::PlaySampleAudioToCable(
+            cableRenderId, sampleCancel, error);
+        {
+            std::lock_guard<std::mutex> guard(sampleMutex);
+            sampleSucceeded = succeeded;
+            sampleError = error;
+        }
+        PostMessageW(hwnd, kSampleAudioComplete, 0, 0);
     });
 }
 void CopyLogs(HWND hwnd) {
@@ -413,8 +464,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         echoButton = AddControl(mainControls, L"BUTTON", L"Echo Test",
                    WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                    359, 500, 164, 34, hwnd, instance, kEchoTest);
+        sampleButton = AddControl(mainControls, L"BUTTON", L"Play Sample Audio",
+                   WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                   28, 537, 245, 30, hwnd, instance, kSampleAudio);
+        EnableWindow(sampleButton, FALSE);
         AddControl(mainControls, L"STATIC", L"Hotkey: Ctrl + Alt + Space",
-                   WS_VISIBLE, 28, 545, 495, 20, hwnd, instance);
+                   WS_VISIBLE, 290, 545, 230, 20, hwnd, instance);
 
         logEdit = AddControl(logControls, L"EDIT", L"",
                    WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL |
@@ -477,6 +532,27 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             return 0;
         }
         break;
+    case kSampleAudioComplete: {
+        if (sampleThread.joinable()) sampleThread.join();
+        sampleRunning = false;
+        if (sampleButton) SetWindowTextW(sampleButton, L"Play Sample Audio");
+        bool succeeded = false;
+        std::wstring error;
+        {
+            std::lock_guard<std::mutex> guard(sampleMutex);
+            succeeded = sampleSucceeded;
+            error = sampleError;
+        }
+        if (!succeeded) {
+            audioptt::LogError(L"Sample Audio failed: " + error);
+            MessageBoxW(hwnd, error.c_str(), L"AudioPTT - Sample Audio Error",
+                        MB_OK | MB_ICONERROR);
+            TabCtrl_SetCurSel(tabs, 1);
+            SetPage(1);
+        }
+        Refresh();
+        return 0;
+    }
     case kEchoTestComplete: {
         if (echoThread.joinable()) echoThread.join();
         echoRunning = false;
@@ -521,6 +597,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         }
         case kDevices: ShowDevicesInLog(); return 0;
         case kEchoTest: StartEchoTest(hwnd); return 0;
+        case kSampleAudio: StartSampleAudio(hwnd); return 0;
         case kRetry: if (!echoRunning) SetupAudio(hwnd); return 0;
         case kCopyLogs: CopyLogs(hwnd); return 0;
         case kInspectSessions: ShowAudioSessions(true); return 0;
@@ -528,7 +605,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         }
         break;
     case WM_CLOSE:
-        // Let the short diagnostic finish before freeing its worker/UI state.
+        // Stop the speech producer before changing or restoring Windows
+        // default audio devices, and don't leave worker threads behind.
+        sampleCancel.store(true);
+        if (sampleThread.joinable()) sampleThread.join();
         if (echoThread.joinable()) echoThread.join();
         engine.Stop();
         if (engine.Status().find(L"WARNING: Windows microphone/playback defaults were not restored") != std::wstring::npos) {
