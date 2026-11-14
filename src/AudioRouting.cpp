@@ -23,8 +23,8 @@ struct IPolicyConfig : IUnknown {
     virtual HRESULT STDMETHODCALLTYPE SetProcessingPeriod(PCWSTR, PINT64) = 0;
     virtual HRESULT STDMETHODCALLTYPE GetShareMode(PCWSTR, void*) = 0;
     virtual HRESULT STDMETHODCALLTYPE SetShareMode(PCWSTR, void*) = 0;
-    virtual HRESULT STDMETHODCALLTYPE GetPropertyValue(PCWSTR, INT, const PROPERTYKEY&, PROPVARIANT*) = 0;
-    virtual HRESULT STDMETHODCALLTYPE SetPropertyValue(PCWSTR, INT, const PROPERTYKEY&, const PROPVARIANT*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE GetPropertyValue(PCWSTR, const PROPERTYKEY&, PROPVARIANT*) = 0;
+    virtual HRESULT STDMETHODCALLTYPE SetPropertyValue(PCWSTR, const PROPERTYKEY&, PROPVARIANT*) = 0;
     virtual HRESULT STDMETHODCALLTYPE SetDefaultEndpoint(PCWSTR, ERole) = 0;
     virtual HRESULT STDMETHODCALLTYPE SetEndpointVisibility(PCWSTR, INT) = 0;
 };
@@ -122,10 +122,23 @@ bool RouteDesktopToCable(const AudioRoute& route, std::wstring& error) {
     ComPtr<IMMDeviceEnumerator> enumerator;
     ComPtr<IPolicyConfig> policy;
     if (!OpenObjects(enumerator, &policy, error)) return false;
+    // Do not override output changes made manually since AudioPTT started.
+    if (DefaultId(enumerator.Get(), eConsole) != route.consoleId ||
+        DefaultId(enumerator.Get(), eMultimedia) != route.multimediaId) {
+        error = L"Windows playback devices changed while AudioPTT was open. Restart after selecting physical speakers.";
+        return false;
+    }
     if (!SetRole(policy.Get(), route.cableRenderId, eConsole, error)) return false;
     if (!SetRole(policy.Get(), route.cableRenderId, eMultimedia, error)) {
         std::wstring ignored;
-        SetRole(policy.Get(), route.consoleId, eConsole, ignored);
+        RestoreDesktopRoute(route, ignored);
+        return false;
+    }
+    if (DefaultId(enumerator.Get(), eConsole) != route.cableRenderId ||
+        DefaultId(enumerator.Get(), eMultimedia) != route.cableRenderId) {
+        error = L"Windows did not apply the VB-CABLE playback change.";
+        std::wstring ignored;
+        RestoreDesktopRoute(route, ignored);
         return false;
     }
     error.clear();
@@ -142,7 +155,21 @@ bool RestoreDesktopRoute(const AudioRoute& route, std::wstring& error) {
         success = SetRole(policy.Get(), route.consoleId, eConsole, detail) && success;
     if (DefaultId(enumerator.Get(), eMultimedia) == route.cableRenderId)
         success = SetRole(policy.Get(), route.multimediaId, eMultimedia, detail) && success;
+    // Check actual post-change defaults. Don't report success if Windows
+    // silently refused an operation or kept the cable selected.
+    const bool restored = DefaultId(enumerator.Get(), eConsole) != route.cableRenderId &&
+                          DefaultId(enumerator.Get(), eMultimedia) != route.cableRenderId;
+    success = success && restored;
+    if (!success && detail.empty()) detail = L"One or more Windows audio playback roles still point to VB-CABLE.";
     error = success ? L"" : detail;
     return success;
+}
+bool IsAudioRoutedToCable(const AudioRoute& route) {
+    if (route.cableRenderId.empty()) return false;
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    std::wstring ignored;
+    if (!OpenObjects(enumerator, nullptr, ignored)) return false;
+    return DefaultId(enumerator.Get(), eConsole) == route.cableRenderId ||
+           DefaultId(enumerator.Get(), eMultimedia) == route.cableRenderId;
 }
 } // namespace audioptt
