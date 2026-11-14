@@ -9,6 +9,7 @@ add_executable(AudioPTT WIN32
     src/AudioRouting.cpp
     src/AudioRouteStore.cpp
     src/Diagnostics.cpp
+    src/AudioEchoTest.cpp
 )
 target_compile_definitions(AudioPTT PRIVATE UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(AudioPTT PRIVATE ole32 uuid advapi32 comctl32)
