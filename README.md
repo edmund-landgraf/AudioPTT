@@ -1,12 +1,14 @@
 # AudioPTT
 
-A native C++/Win32 prototype for feeding either microphone audio or desktop audio into Discord through VB-CABLE, without OBS.
+A small native C++/Win32 application for switching Discord's input between your microphone and desktop audio without OBS. Requires VB-CABLE for the prototype.
 
-**Development prototype — not yet verified on a Windows machine.** The current engine performs real WASAPI capture and render operations, but is not hardened for production use.
+> **Experimental development build.** Routing is implemented in source, but Windows compilation, hardware behavior, and recovery have not yet been verified. In particular, this version changes the Windows default playback device while Broadcast is on.
 
-## Build
+## Open in Visual Studio
 
-Install Visual Studio 2022 or newer with **Desktop development with C++** and a Windows SDK, then open this folder in Visual Studio (CMake project), or build:
+Install the **Desktop development with C++** workload and Windows SDK. Clone the repository, then choose **File > Open > Folder** and select the repository root containing `CMakeLists.txt`. Visual Studio recognizes it as a CMake C++ project automatically; you do **not** need to create a DLL or a new .sln file.
+
+Alternatively, run:
 
 ```powershell
 cmake -S . -B build -A x64
@@ -14,45 +16,43 @@ cmake --build build --config Debug
 .\build\Debug\AudioPTT.exe
 ```
 
-The GitHub Actions workflow also compiles the application on Windows and uploads an executable build artifact when successful.
+Windows CI is configured in `.github/workflows/windows-build.yml`.
+
+## Audio behavior
+
+| Broadcast | Monitor | Discord input (CABLE Output) | Local playback |
+|---|---|---|---|
+| Off | Either | Physical microphone via AudioPTT | Normal speakers |
+| On | Unchecked | Desktop audio routed to VB-CABLE | Silent for apps following Windows default |
+| On | Checked | Desktop audio routed to VB-CABLE | Also copied to physical speakers |
+
+**Monitor controls only local playback. It never disables sending PC audio to Discord.** The microphone is not mixed in during Broadcast. Discord's inbound voice should be sent directly to the physical output, not the cable.
 
 ## Test setup
 
-1. Install VB-CABLE. In **Windows Sound**, set your physical speakers/headphones as the **default output**.
-2. Set a **physical microphone** as your Windows default **communications input** (not VB-CABLE).
-3. Set Discord's **Input Device** to **CABLE Output (VB-Audio Virtual Cable)**. Keep Discord's **Output Device** set to your physical speakers/headphones.
-4. Close OBS, particularly any audio monitoring routed to VB-CABLE.
-5. Start AudioPTT. It automatically attempts microphone → **CABLE Input** on launch.
-6. First confirm mic passthrough in Discord's mic test. Then check **Monitor** and press **BROADCAST PC AUDIO**. This switches to physical-speaker loopback → CABLE Input.
+1. Install VB-CABLE, then set physical speakers/headphones as Windows' **default output** before starting.
+2. Set a physical microphone as **default communications input**.
+3. In Discord, explicitly select **CABLE Output (VB-Audio Virtual Cable)** as the **input** and the actual physical speakers/headphones as the **output**.
+4. Close OBS and disable any other VB-CABLE monitoring to avoid feedback.
+5. Run AudioPTT. When Broadcast is off, it forwards your physical microphone into **CABLE Input** so Discord hears it.
+6. Enable Broadcast. Windows desktop output changes to **CABLE Input**. If Monitor is unchecked, AudioPTT does not reproduce that output locally. If checked, AudioPTT captures a copy from the cable and plays it on the saved physical device.
+7. Turn Broadcast off to restore your saved default Windows output and microphone forwarding.
 
-**Do not set CABLE Input as the Windows default output for this prototype.** That would produce feedback or duplicate routing. AudioPTT detects this and refuses desktop-loopback capture.
+## Important limitations
 
-## Current behavior
+- **Windows default-device switching is currently implemented through an undocumented COM interface (PolicyConfig).** It may not work on all Windows versions. If switching fails, the program should report an error.
+- Some applications keep playing to an explicitly selected device or cached audio session even after Windows' default changes. Silent mode therefore applies only to audio actually routed through the virtual cable; it does **not** guarantee a completely silent PC.
+- If the app crashes or is force-closed while broadcasting, Windows may continue using VB-CABLE as the default audio device. **Fix manually:** Settings > System > Sound > Output > select your physical speakers.
+- The prototype does not use per-process capture; apps that ignore Windows defaults may not be captured, while Discord audio accidentally routed to VB-CABLE may be rebroadcast.
+- Microphone mode handles basic stereo/mono and 16-bit PCM/32-bit float format conversion, with simple linear resampling. Audio glitches are possible and there is no echo cancellation, AGC, or full handling of device removal.
+- No hotkey, tray icon, persisted device picker, installer, or virtual audio driver is included yet.
 
-| Broadcast | Monitor | Discord receives | Local computer audio |
-|---|---|---|---|
-| Off | Off / On | Physical microphone (forwarded) | Normal playback |
-| On | On | Desktop audio from default physical speaker output | Still audible normally |
-| On | Off | **Not implemented: button refuses mode** | Unchanged |
+## Code layout
 
-The mic is not mixed into desktop audio in Broadcast mode, because the engine stops the microphone stream and opens desktop loopback instead. **The app does not hardware-mute the microphone; it prevents routing it to VB-CABLE.**
+- `src/main.cpp` — Win32 window and controls
+- `src/AudioDevices.*` — enumerate Windows audio devices
+- `src/AudioRouting.*` — save and switch Windows default playback device
+- `src/AudioEngine.*` — mic forwarding, cable loopback monitoring, lifecycle
+- `CMakeLists.txt` — x64 native C++ build
 
-The microphone-to-cable and desktop-loopback-to-cable paths use WASAPI shared mode, basic stereo/mono conversion, simple linear sample-rate conversion, and 32-bit floating-point or 16-bit PCM mix formats. They are not yet performance-tuned or thoroughly tested against device resets, sleep/resume, or differing driver formats.
-
-### Limitations to address next
-
-- **Silent desktop broadcast requires different architecture.** WASAPI loopback only copies audio already rendered to a physical device. Disabling local playback separately requires a dedicated virtual playback path and deliberate routing of application audio; do not mute the default device to simulate silence.
-- Currently uses Windows *default* devices. Device selection by endpoint ID and automatic reinitialization on device change are still needed.
-- A transient audio-driver error stops the worker; the prototype does not automatically reconnect.
-- Hotkey, system tray, device settings, visual levels, installer, and proper error telemetry are still pending.
-- Discord voice should remain directed to physical speakers; if it is captured through the same loopback, it will be broadcast too. A future version must exclude Discord from system capture.
-- No echo cancellation, noise filtering, or AGC is performed by the application.
-
-The Discord input is the **CABLE Output recording endpoint**; AudioPTT writes to the matching **CABLE Input playback endpoint**. A regular user-mode process cannot inject arbitrary PCM samples directly into Discord's internal microphone stream.
-
-## Files
-
-- `src/AudioDevices.*` — Windows capture/render endpoint discovery
-- `src/AudioEngine.*` — WASAPI capture, format conversion, sample queue, and cable rendering
-- `src/main.cpp` — tiny native Win32 interface
-- `CMakeLists.txt` — Visual Studio / x64 build definition
+The output device named **CABLE Input** is the VB-CABLE playback side; Discord records from **CABLE Output**.
