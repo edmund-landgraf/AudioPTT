@@ -2,6 +2,8 @@
 #include <commctrl.h>
 #include <cstring>
 #include <cstdint>
+#include <mutex>
+#include <thread>
 #include <objbase.h>
 #include <string>
 #include <sstream>
@@ -10,6 +12,7 @@
 #include "AudioDevices.h"
 #include "AudioRouteStore.h"
 #include "Diagnostics.h"
+#include "AudioEchoTest.h"
 
 namespace {
 constexpr int kButton = 101;
@@ -19,6 +22,8 @@ constexpr int kRetry = 107;
 constexpr int kCopyLogs = 108;
 constexpr int kClearLogs = 109;
 constexpr int kTabs = 110;
+constexpr int kEchoTest = 111;
+constexpr UINT kEchoTestComplete = WM_APP + 30;
 constexpr UINT_PTR kStartupTimer = 201;
 constexpr UINT_PTR kHealthTimer = 202;
 constexpr int kHotkey = 203;
@@ -30,6 +35,11 @@ HWND monitorCheck = nullptr;
 HWND statusLabel = nullptr;
 HWND routeDetails = nullptr;
 HWND logEdit = nullptr;
+HWND echoButton = nullptr;
+std::thread echoThread;
+std::mutex echoMutex;
+audioptt::EchoTestResult echoResult;
+bool echoRunning = false;
 std::vector<HWND> mainControls;
 std::vector<HWND> logControls;
 std::wstring uiProblem;
@@ -218,6 +228,45 @@ void Toggle() {
     RefreshDevices();
     Refresh();
 }
+void StartEchoTest(HWND hwnd) {
+    if (echoRunning) return;
+    if (engine.Broadcasting()) {
+        MessageBoxW(hwnd,
+            L"Run this diagnostic with Broadcast OFF, so a speaker return is unexpected.",
+            L"Echo Test", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    if (!engine.Running() || engine.CableRenderId().empty() ||
+        engine.PhysicalOutputId().empty()) {
+        audioptt::LogWarning(L"Echo test blocked: microphone mode is not running or endpoint IDs are unavailable.");
+        MessageBoxW(hwnd, L"Start the microphone passthrough first, then retry the Echo Test.",
+                    L"Echo Test", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (MessageBoxW(hwnd,
+        L"The Echo Test will briefly play a quiet A-B-A tone into VB-CABLE.\n"
+        L"Anyone in your Discord call may hear it.\n\n"
+        L"It then checks whether that tone returns through the physical speakers.\n"
+        L"Continue?",
+        L"AudioPTT - Echo Test",
+        MB_OKCANCEL | MB_ICONINFORMATION) != IDOK) return;
+
+    if (echoThread.joinable()) echoThread.join();
+    echoRunning = true;
+    EnableWindow(echoButton, FALSE);
+    SetWindowTextW(echoButton, L"Testing...");
+    const auto cableId = engine.CableRenderId();
+    const auto speakerId = engine.PhysicalOutputId();
+    audioptt::LogInfo(L"Echo test requested (Broadcast OFF); checking for unexpected mic return.");
+    echoThread = std::thread([hwnd, cableId, speakerId]() {
+        const auto result = audioptt::RunEchoTest(cableId, speakerId);
+        {
+            std::lock_guard<std::mutex> lock(echoMutex);
+            echoResult = result;
+        }
+        PostMessageW(hwnd, kEchoTestComplete, 0, 0);
+    });
+}
 void CopyLogs(HWND hwnd) {
     const auto content = audioptt::LogText();
     if (!OpenClipboard(hwnd)) {
@@ -270,10 +319,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
                    WS_VISIBLE | SS_LEFT, 28, 448, 495, 44, hwnd, instance);
         AddControl(mainControls, L"BUTTON", L"Device IDs / diagnostics",
                    WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                   28, 500, 234, 34, hwnd, instance, kDevices);
+                   28, 500, 165, 34, hwnd, instance, kDevices);
         AddControl(mainControls, L"BUTTON", L"Retry audio setup",
                    WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-                   274, 500, 249, 34, hwnd, instance, kRetry);
+                   199, 500, 154, 34, hwnd, instance, kRetry);
+        echoButton = AddControl(mainControls, L"BUTTON", L"Echo Test",
+                   WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                   359, 500, 164, 34, hwnd, instance, kEchoTest);
         AddControl(mainControls, L"STATIC", L"Hotkey: Ctrl + Alt + Space",
                    WS_VISIBLE, 28, 545, 495, 20, hwnd, instance);
 
@@ -333,6 +385,26 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             return 0;
         }
         break;
+    case kEchoTestComplete: {
+        if (echoThread.joinable()) echoThread.join();
+        echoRunning = false;
+        if (echoButton) {
+            SetWindowTextW(echoButton, L"Echo Test");
+            EnableWindow(echoButton, TRUE);
+        }
+        audioptt::EchoTestResult result;
+        {
+            std::lock_guard<std::mutex> lock(echoMutex);
+            result = echoResult;
+        }
+        TabCtrl_SetCurSel(tabs, 1);
+        SetPage(1);
+        RefreshLogs(true);
+        MessageBoxW(hwnd, result.message.c_str(), L"AudioPTT - Echo Test Result",
+                    MB_OK | (result.echoDetected ? MB_ICONWARNING :
+                        (result.completed ? MB_ICONINFORMATION : MB_ICONERROR)));
+        return 0;
+    }
     case WM_HOTKEY:
         if (wp == kHotkey) { Toggle(); return 0; }
         break;
@@ -352,12 +424,15 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             return 0;
         }
         case kDevices: ShowDevicesInLog(); return 0;
+        case kEchoTest: StartEchoTest(hwnd); return 0;
         case kRetry: SetupAudio(hwnd); return 0;
         case kCopyLogs: CopyLogs(hwnd); return 0;
         case kClearLogs: audioptt::ClearLogs(); RefreshLogs(true); return 0;
         }
         break;
     case WM_CLOSE:
+        // Let the short diagnostic finish before freeing its worker/UI state.
+        if (echoThread.joinable()) echoThread.join();
         engine.Stop();
         if (engine.Status().find(L"WARNING: Windows playback was not restored") != std::wstring::npos) {
             audioptt::LogError(engine.Status());
