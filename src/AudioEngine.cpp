@@ -139,8 +139,6 @@ void Forward(Stream& input, IAudioCaptureClient* capture,
     std::deque<Frame> samples;
     double phase = 0;
     const double step = static_cast<double>(input.format->nSamplesPerSec) / output.format->nSamplesPerSec;
-    Require(output.client->Start(), L"start cable render");
-    Require(input.client->Start(), L"start audio capture");
     while (!stop.load()) {
         UINT32 packet = 0;
         Require(capture->GetNextPacketSize(&packet), L"capture packet size");
@@ -206,73 +204,168 @@ void Forward(Stream& input, IAudioCaptureClient* capture,
 } // namespace
 
 AudioEngine::~AudioEngine() { Stop(); }
+
 std::wstring AudioEngine::Status() const {
     std::lock_guard lock(statusMutex_);
     return status_;
 }
-bool AudioEngine::Launch(bool broadcast, std::wstring& error) {
-    Stop();
-    stop_.store(false);
-    std::promise<std::wstring> startup;
-    auto future = startup.get_future();
-    worker_ = std::thread(&AudioEngine::Worker, this, broadcast, std::move(startup));
-    error = future.get();
-    if (!error.empty()) {
-        Stop();
-        return false;
-    }
-    broadcasting_.store(broadcast);
-    return true;
-}
-bool AudioEngine::Start(std::wstring& error) { return Launch(false, error); }
-bool AudioEngine::SetBroadcast(bool enabled, std::wstring& error) {
-    if (enabled == broadcasting_.load() && Running()) { error.clear(); return true; }
-    if (enabled && !monitor_.load()) {
-        error = L"Silent desktop broadcast is not yet implemented. Enable Monitor first.\n"
-                L"This prevents accidentally broadcasting while audio remains audible locally.";
-        return false;
-    }
-    if (Launch(enabled, error)) return true;
-    if (enabled) {
-        std::wstring restoreError;
-        Launch(false, restoreError); // Best effort to restore microphone on failure.
-    }
-    return false;
-}
-bool AudioEngine::SetMonitor(bool enabled, std::wstring& error) {
-    if (!enabled && Broadcasting()) {
-        error = L"Silent broadcast routing is not implemented yet. Stop broadcasting before disabling Monitor.";
-        return false;
-    }
-    monitor_.store(enabled);
-    error.clear();
-    return true;
-}
-void AudioEngine::Stop() {
+
+void AudioEngine::ShutdownWorker() {
     stop_.store(true);
     if (worker_.joinable()) worker_.join();
     running_.store(false);
+}
+
+bool AudioEngine::LaunchWorker(bool broadcast, std::wstring& error) {
+    ShutdownWorker();
+    stop_.store(false);
+    std::promise<std::wstring> startup;
+    auto future = startup.get_future();
+    worker_ = std::thread(&AudioEngine::Worker, this, broadcast, monitor_.load(), std::move(startup));
+    error = future.get();
+    if (!error.empty()) {
+        ShutdownWorker();
+        return false;
+    }
+    return true;
+}
+
+bool AudioEngine::Start(std::wstring& error) {
+    if (routeCaptured_) { error.clear(); return true; }
+    if (!CaptureAudioRoute(route_, error)) {
+        std::lock_guard lock(statusMutex_);
+        status_ = error;
+        return false;
+    }
+    routeCaptured_ = true;
+    if (!LaunchWorker(false, error)) {
+        routeCaptured_ = false;
+        return false;
+    }
+    broadcasting_.store(false);
+    return true;
+}
+
+bool AudioEngine::SetBroadcast(bool enabled, std::wstring& error) {
+    if (!routeCaptured_) {
+        error = L"AudioPTT is not ready. Confirm the audio devices and restart the app.";
+        return false;
+    }
+    if (enabled == broadcasting_.load() && running_.load()) {
+        error.clear();
+        return true;
+    }
+    ShutdownWorker();  // Never mix microphone samples with live desktop audio.
+
+    if (enabled) {
+        if (!RouteDesktopToCable(route_, error)) {
+            std::wstring ignored;
+            LaunchWorker(false, ignored);
+            return false;
+        }
+        if (LaunchWorker(true, error)) {
+            broadcasting_.store(true);
+            return true;
+        }
+        std::wstring restoreError;
+        RestoreDesktopRoute(route_, restoreError);
+        std::wstring ignored;
+        LaunchWorker(false, ignored);
+        broadcasting_.store(false);
+        if (!restoreError.empty()) error += L" Also could not restore default playback: " + restoreError;
+        return false;
+    }
+
+    if (!RestoreDesktopRoute(route_, error)) {
+        std::wstring ignored;
+        LaunchWorker(true, ignored);
+        // Keep broadcasting=true if routing is still through VB-CABLE.
+        return false;
+    }
+    if (!LaunchWorker(false, error)) {
+        broadcasting_.store(false);
+        return false;
+    }
+    broadcasting_.store(false);
+    return true;
+}
+
+bool AudioEngine::SetMonitor(bool enabled, std::wstring& error) {
+    if (enabled == monitor_.load()) { error.clear(); return true; }
+    const bool previous = monitor_.load();
+    monitor_.store(enabled);
+    if (broadcasting_.load() && routeCaptured_) {
+        if (!LaunchWorker(true, error)) {
+            monitor_.store(previous);
+            std::wstring ignored;
+            LaunchWorker(true, ignored);
+            return false;
+        }
+    }
+    error.clear();
+    return true;
+}
+
+void AudioEngine::Stop() {
+    ShutdownWorker();
+    if (routeCaptured_) {
+        std::wstring error;
+        if (!RestoreDesktopRoute(route_, error) && !error.empty()) {
+            std::lock_guard lock(statusMutex_);
+            status_ = L"WARNING: Windows playback was not restored: " + error;
+        }
+        routeCaptured_ = false;
+    }
     broadcasting_.store(false);
 }
-void AudioEngine::Worker(bool broadcast, std::promise<std::wstring> startup) {
+
+void AudioEngine::Worker(bool broadcast, bool monitor, std::promise<std::wstring> startup) {
     bool signaled = false;
     try {
         ComScope com;
         if (FAILED(com.hr)) throw std::runtime_error("COM initialization failed");
+
+        // Windows itself forwards desktop audio into CABLE Input when broadcasting.
+        // Without monitoring, AudioPTT deliberately opens NO local render stream.
+        if (broadcast && !monitor) {
+            { std::lock_guard lock(statusMutex_);
+              status_ = L"PC audio -> Discord (silent locally)"; }
+            running_.store(true);
+            startup.set_value(L"");
+            signaled = true;
+            while (!stop_.load()) Sleep(25);
+            running_.store(false);
+            return;
+        }
+
         ComPtr<IMMDeviceEnumerator> enumerator;
         Require(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_INPROC_SERVER,
                                  IID_PPV_ARGS(&enumerator)), L"create enumerator");
-        auto cable = FindCableRender(enumerator.Get());
-        auto source = broadcast ? FindSpeakers(enumerator.Get()) : FindMic(enumerator.Get());
+        ComPtr<IMMDevice> cable, speaker, mic;
+        Require(enumerator->GetDevice(route_.cableRenderId.c_str(), &cable), L"get VB-CABLE endpoint");
+
+        // OFF: mic capture -> cable playback (virtual mic in Discord).
+        // ON + Monitor: cable playback loopback -> physical speaker output.
         Stream input, output;
-        input.Open(source.Get(), broadcast);
-        output.Open(cable.Get(), false);
+        if (broadcast) {
+            Require(enumerator->GetDevice(route_.physicalOutputId.c_str(), &speaker),
+                    L"get physical speaker endpoint");
+            input.Open(cable.Get(), true);
+            output.Open(speaker.Get(), false);
+        } else {
+            mic = FindMic(enumerator.Get());
+            input.Open(mic.Get(), false);
+            output.Open(cable.Get(), false);
+        }
         ComPtr<IAudioCaptureClient> capture;
         ComPtr<IAudioRenderClient> render;
-        Require(input.client->GetService(IID_PPV_ARGS(&capture)), L"capture service");
-        Require(output.client->GetService(IID_PPV_ARGS(&render)), L"render service");
+        Require(input.client->GetService(IID_PPV_ARGS(&capture)), L"get capture service");
+        Require(output.client->GetService(IID_PPV_ARGS(&render)), L"get render service");
+
+        Require(output.client->Start(), L"start render stream");
+        Require(input.client->Start(), L"start capture stream");
         { std::lock_guard lock(statusMutex_);
-          status_ = broadcast ? L"Desktop audio -> VB-CABLE (monitor ON)" : L"Microphone -> VB-CABLE"; }
+          status_ = broadcast ? L"PC audio -> Discord + speakers" : L"Microphone -> Discord"; }
         running_.store(true);
         startup.set_value(L"");
         signaled = true;
