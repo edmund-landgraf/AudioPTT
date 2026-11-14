@@ -39,9 +39,9 @@ std::wstring EndpointId(IMMDevice* device) {
     CoTaskMemFree(raw);
     return id;
 }
-std::wstring DefaultId(IMMDeviceEnumerator* enumerator, ERole role) {
+std::wstring DefaultId(IMMDeviceEnumerator* enumerator, EDataFlow flow, ERole role) {
     ComPtr<IMMDevice> device;
-    if (FAILED(enumerator->GetDefaultAudioEndpoint(eRender, role, &device))) return {};
+    if (FAILED(enumerator->GetDefaultAudioEndpoint(flow, role, &device))) return {};
     return EndpointId(device.Get());
 }
 std::wstring Name(IMMDevice* device) {
@@ -72,12 +72,14 @@ bool OpenObjects(ComPtr<IMMDeviceEnumerator>& enumerator, ComPtr<IPolicyConfig>*
     }
     return true;
 }
-bool SetRole(IPolicyConfig* policy, const std::wstring& id, ERole role,
-             std::wstring& error) {
+bool SetRole(IPolicyConfig* policy, const std::wstring& id, EDataFlow flow,
+             ERole role, std::wstring& error) {
     if (id.empty()) { error = L"Missing saved audio endpoint ID."; LogError(error); return false; }
     HRESULT hr = policy->SetDefaultEndpoint(id.c_str(), role);
     if (FAILED(hr)) {
-        error = L"Windows rejected default playback device change, role=" +
+        error = L"Windows rejected default " +
+                std::wstring(flow == eCapture ? L"recording" : L"playback") +
+                L" device change, role=" +
                 std::to_wstring(static_cast<int>(role)) + L", HRESULT=" +
                 std::to_wstring(static_cast<unsigned>(hr));
         LogError(error);
@@ -90,144 +92,175 @@ bool SetRole(IPolicyConfig* policy, const std::wstring& id, ERole role,
 bool CaptureAudioRoute(AudioRoute& route, std::wstring& error) {
     ComPtr<IMMDeviceEnumerator> enumerator;
     if (!OpenObjects(enumerator, nullptr, error)) return false;
-    route.consoleId = DefaultId(enumerator.Get(), eConsole);
-    route.multimediaId = DefaultId(enumerator.Get(), eMultimedia);
+    route.consoleId = DefaultId(enumerator.Get(), eRender, eConsole);
+    route.multimediaId = DefaultId(enumerator.Get(), eRender, eMultimedia);
+    route.captureConsoleId = DefaultId(enumerator.Get(), eCapture, eConsole);
+    route.captureMultimediaId = DefaultId(enumerator.Get(), eCapture, eMultimedia);
+    route.captureCommunicationsId = DefaultId(enumerator.Get(), eCapture, eCommunications);
+
     DeviceSnapshot snapshot;
-    bool snapshotRead = false;
     try {
         snapshot = ReadDeviceSnapshot();
-        snapshotRead = true;
-        const auto fmt = [](const EndpointDetail& d) {
-            return d.Present() ? d.name : std::wstring(L"(not found)");
-        };
-        LogInfo(L"Windows console output: " + fmt(snapshot.consoleOutput));
-        LogInfo(L"Windows multimedia output: " + fmt(snapshot.multimediaOutput));
-        LogInfo(L"Windows communications output: " + fmt(snapshot.communicationsOutput));
-        LogInfo(L"Default communications microphone: " + fmt(snapshot.microphone));
-        LogInfo(L"VB-CABLE playback / CABLE Input: " + fmt(snapshot.cableRender));
-        LogInfo(L"VB-CABLE recording / CABLE Output: " + fmt(snapshot.cableCapture));
     } catch (...) {
-        LogWarning(L"Could not read the complete device snapshot; startup cannot verify the VB-CABLE recording side or microphone.");
-    }
-    if (route.consoleId.empty() || route.multimediaId.empty()) {
-        error = L"BLOCKED: Windows Console or Multimedia default playback endpoint is missing. Select physical speakers in Windows Sound settings.";
+        error = L"BLOCKED: Windows audio device snapshot is unavailable.";
         LogError(error);
         return false;
     }
-    ComPtr<IMMDeviceCollection> devices;
-    if (FAILED(enumerator->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &devices))) {
-        error = L"Cannot enumerate active Windows playback endpoints.";
+    const auto name = [](const EndpointDetail& d) {
+        return d.Present() ? d.name : std::wstring(L"(not found)");
+    };
+    LogInfo(L"Windows console output: " + name(snapshot.consoleOutput));
+    LogInfo(L"Windows multimedia output: " + name(snapshot.multimediaOutput));
+    LogInfo(L"Windows communications output: " + name(snapshot.communicationsOutput));
+    LogInfo(L"Default communications microphone: " + name(snapshot.microphone));
+    LogInfo(L"VB-CABLE playback / CABLE Input: " + name(snapshot.cableRender));
+    LogInfo(L"VB-CABLE recording / CABLE Output: " + name(snapshot.cableCapture));
+
+    route.cableRenderId = snapshot.cableRender.id;
+    route.cableCaptureId = snapshot.cableCapture.id;
+    route.physicalOutputId = route.consoleId;
+    if (route.consoleId.empty() || route.multimediaId.empty() ||
+        route.captureConsoleId.empty() || route.captureMultimediaId.empty() ||
+        route.captureCommunicationsId.empty()) {
+        error = L"BLOCKED: One or more Windows default playback/recording roles are missing. "
+                L"Set physical speakers and a physical microphone as Windows defaults.";
         LogError(error);
         return false;
     }
-    UINT count = 0;
-    devices->GetCount(&count);
-    route.cableRenderId.clear();
-    for (UINT i = 0; i < count; ++i) {
-        ComPtr<IMMDevice> device;
-        if (SUCCEEDED(devices->Item(i, &device)) &&
-            Name(device.Get()).find(L"CABLE INPUT") != std::wstring::npos) {
-            route.cableRenderId = EndpointId(device.Get());
-            break;
-        }
-    }
-    if (route.cableRenderId.empty()) {
-        error = L"BLOCKED: VB-CABLE playback endpoint 'CABLE Input' is missing. Install/enable VB-CABLE and retry.";
+    if (route.cableRenderId.empty() || route.cableCaptureId.empty()) {
+        error = L"BLOCKED: VB-CABLE Input or CABLE Output is missing. Install/enable VB-CABLE.";
         LogError(error);
         return false;
     }
     if (route.consoleId == route.cableRenderId || route.multimediaId == route.cableRenderId) {
-        const std::wstring roles = route.consoleId == route.cableRenderId &&
-                                   route.multimediaId == route.cableRenderId
-                                       ? L"Console AND Multimedia"
-                                       : (route.consoleId == route.cableRenderId
-                                              ? L"Console" : L"Multimedia");
-        error = L"BLOCKED: Windows " + roles +
-                L" output is already VB-CABLE (CABLE Input). Set Windows default playback to your PHYSICAL speakers/headphones, then click Retry audio setup.";
+        error = L"BLOCKED: Console/Multimedia playback is already VB-CABLE. "
+                L"Select physical speakers before starting AudioPTT.";
         LogError(error);
         return false;
     }
-    if (!snapshotRead) {
-        error = L"BLOCKED: Windows audio device snapshot is unavailable; cannot verify VB-CABLE and microphone safety.";
-        LogError(error);
-        return false;
-    }
-    if (!snapshot.cableCapture.Present()) {
-        error = L"BLOCKED: VB-CABLE recording endpoint 'CABLE Output' is missing. Confirm the virtual cable driver is installed and enabled.";
-        LogError(error);
-        return false;
-    }
-    if (!snapshot.microphone.Present() || snapshot.microphone.id == snapshot.cableCapture.id) {
-        error = L"BLOCKED: Windows default communications microphone is missing or set to CABLE Output. Select your physical microphone as the Windows default communications input.";
+    if (route.captureConsoleId == route.cableCaptureId ||
+        route.captureMultimediaId == route.cableCaptureId ||
+        route.captureCommunicationsId == route.cableCaptureId) {
+        error = L"BLOCKED: A Windows default recording role already points to CABLE Output. "
+                L"Select your physical microphone as the Windows default input before starting AudioPTT.";
         LogError(error);
         return false;
     }
     if (snapshot.communicationsOutput.id == route.cableRenderId)
-        LogWarning(L"Communications playback is VB-CABLE. Discord incoming voices may be rebroadcast; select your physical speakers as Discord Output.");
-    LogInfo(L"Startup routing checks passed. Saved physical speaker ID and VB-CABLE render ID.");
-    route.physicalOutputId = route.consoleId;
+        LogWarning(L"Communications playback is VB-CABLE. Set Discord output explicitly "
+                   L"to your physical speakers to prevent callers being rebroadcast.");
+    LogInfo(L"Idle route saved: physical defaults remain untouched. "
+            L"AudioPTT will not open the microphone while idle.");
     error.clear();
     return true;
 }
-bool RouteDesktopToCable(const AudioRoute& route, std::wstring& error) {
-    ComPtr<IMMDeviceEnumerator> enumerator;
-    ComPtr<IPolicyConfig> policy;
-    LogInfo(L"Broadcast ON: switching Windows console/multimedia output to VB-CABLE.");
-    if (!OpenObjects(enumerator, &policy, error)) return false;
-    // Do not override output changes made manually since AudioPTT started.
-    if (DefaultId(enumerator.Get(), eConsole) != route.consoleId ||
-        DefaultId(enumerator.Get(), eMultimedia) != route.multimediaId) {
-        error = L"BLOCKED: Windows playback default changed since AudioPTT started. Retry setup with physical speakers selected.";
-        LogError(error);
-        return false;
-    }
-    if (!SetRole(policy.Get(), route.cableRenderId, eConsole, error)) return false;
-    if (!SetRole(policy.Get(), route.cableRenderId, eMultimedia, error)) {
-        std::wstring ignored;
-        RestoreDesktopRoute(route, ignored);
-        return false;
-    }
-    if (DefaultId(enumerator.Get(), eConsole) != route.cableRenderId ||
-        DefaultId(enumerator.Get(), eMultimedia) != route.cableRenderId) {
-        error = L"Windows did not apply the VB-CABLE playback change.";
-        LogError(error);
-        std::wstring ignored;
-        RestoreDesktopRoute(route, ignored);
-        return false;
-    }
-    LogInfo(L"Broadcast ON: Windows Console and Multimedia now route to CABLE Input.");
-    error.clear();
-    return true;
-}
-bool RestoreDesktopRoute(const AudioRoute& route, std::wstring& error) {
-    ComPtr<IMMDeviceEnumerator> enumerator;
-    ComPtr<IPolicyConfig> policy;
-    LogInfo(L"Restoring Windows playback defaults to the saved physical devices.");
-    if (!OpenObjects(enumerator, &policy, error)) return false;
-    bool success = true;
-    std::wstring detail;
-    // Never undo manual device changes made by the user while AudioPTT ran.
-    if (DefaultId(enumerator.Get(), eConsole) == route.cableRenderId)
-        success = SetRole(policy.Get(), route.consoleId, eConsole, detail) && success;
-    if (DefaultId(enumerator.Get(), eMultimedia) == route.cableRenderId)
-        success = SetRole(policy.Get(), route.multimediaId, eMultimedia, detail) && success;
-    // Check actual post-change defaults. Don't report success if Windows
-    // silently refused an operation or kept the cable selected.
-    const bool restored = DefaultId(enumerator.Get(), eConsole) != route.cableRenderId &&
-                          DefaultId(enumerator.Get(), eMultimedia) != route.cableRenderId;
-    success = success && restored;
-    if (!success && detail.empty()) detail = L"One or more Windows audio playback roles still point to VB-CABLE.";
-    error = success ? L"" : detail;
-    if (success) LogInfo(L"Windows playback restored (no console/multimedia role left on the cable).");
-    else LogError(L"Playback restore failed: " + error);
-    return success;
-}
-bool IsAudioRoutedToCable(const AudioRoute& route) {
-    if (route.cableRenderId.empty()) return false;
+
+bool IsDesktopBroadcastRouteActive(const AudioRoute& route) {
+    if (route.cableRenderId.empty() || route.cableCaptureId.empty()) return false;
     ComPtr<IMMDeviceEnumerator> enumerator;
     std::wstring ignored;
     if (!OpenObjects(enumerator, nullptr, ignored)) return false;
-    return DefaultId(enumerator.Get(), eConsole) == route.cableRenderId ||
-           DefaultId(enumerator.Get(), eMultimedia) == route.cableRenderId;
+    return DefaultId(enumerator.Get(), eRender, eConsole) == route.cableRenderId &&
+           DefaultId(enumerator.Get(), eRender, eMultimedia) == route.cableRenderId &&
+           DefaultId(enumerator.Get(), eCapture, eConsole) == route.cableCaptureId &&
+           DefaultId(enumerator.Get(), eCapture, eMultimedia) == route.cableCaptureId &&
+           DefaultId(enumerator.Get(), eCapture, eCommunications) == route.cableCaptureId;
+}
+
+bool RouteDesktopToCable(const AudioRoute& route, std::wstring& error) {
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    ComPtr<IPolicyConfig> policy;
+    LogInfo(L"Broadcast ON: switching Windows playback to CABLE Input and "
+            L"Windows default microphone roles to CABLE Output.");
+    if (!OpenObjects(enumerator, &policy, error)) return false;
+    // No manual change to default devices may be overridden silently.
+    if (DefaultId(enumerator.Get(), eRender, eConsole) != route.consoleId ||
+        DefaultId(enumerator.Get(), eRender, eMultimedia) != route.multimediaId ||
+        DefaultId(enumerator.Get(), eCapture, eConsole) != route.captureConsoleId ||
+        DefaultId(enumerator.Get(), eCapture, eMultimedia) != route.captureMultimediaId ||
+        DefaultId(enumerator.Get(), eCapture, eCommunications) != route.captureCommunicationsId) {
+        error = L"BLOCKED: Windows playback or microphone defaults changed since AudioPTT "
+                L"started. Close AudioPTT, select the desired physical input/output, and reopen.";
+        LogError(error);
+        return false;
+    }
+    // Any failure must restore all roles already changed, not just speakers.
+    const auto rollback = [&]() {
+        const std::wstring failure = error;
+        std::wstring restoreError;
+        const bool restored = RestoreDesktopRoute(route, restoreError);
+        error = failure;
+        if (!restored) error += L" CRITICAL: incomplete rollback: " + restoreError;
+    };
+    if (!SetRole(policy.Get(), route.cableCaptureId, eCapture, eConsole, error)) {
+        rollback(); return false;
+    }
+    if (!SetRole(policy.Get(), route.cableCaptureId, eCapture, eMultimedia, error)) {
+        rollback(); return false;
+    }
+    if (!SetRole(policy.Get(), route.cableCaptureId, eCapture, eCommunications, error)) {
+        rollback(); return false;
+    }
+    if (!SetRole(policy.Get(), route.cableRenderId, eRender, eConsole, error)) {
+        rollback(); return false;
+    }
+    if (!SetRole(policy.Get(), route.cableRenderId, eRender, eMultimedia, error)) {
+        rollback(); return false;
+    }
+    if (!IsDesktopBroadcastRouteActive(route)) {
+        error = L"Windows did not apply all playback/recording roles for Broadcast.";
+        LogError(error);
+        rollback();
+        return false;
+    }
+    LogInfo(L"Broadcast ON: Console/Multimedia playback=CABLE Input; "
+            L"Console/Multimedia/Communications recording=CABLE Output.");
+    error.clear();
+    return true;
+}
+
+bool RestoreDesktopRoute(const AudioRoute& route, std::wstring& error) {
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    ComPtr<IPolicyConfig> policy;
+    LogInfo(L"Restoring saved Windows playback AND microphone default roles.");
+    if (!OpenObjects(enumerator, &policy, error)) return false;
+    bool success = true;
+    std::wstring detail;
+    // Only reverse our cable assignments. Respect any manual changes to
+    // other endpoints made while AudioPTT was active.
+    const auto restore = [&](EDataFlow flow, ERole role,
+                             const std::wstring& cableId, const std::wstring& originalId) {
+        if (!cableId.empty() && !originalId.empty() &&
+            DefaultId(enumerator.Get(), flow, role) == cableId) {
+            if (!SetRole(policy.Get(), originalId, flow, role, detail)) success = false;
+        }
+    };
+    restore(eRender, eConsole, route.cableRenderId, route.consoleId);
+    restore(eRender, eMultimedia, route.cableRenderId, route.multimediaId);
+    restore(eCapture, eConsole, route.cableCaptureId, route.captureConsoleId);
+    restore(eCapture, eMultimedia, route.cableCaptureId, route.captureMultimediaId);
+    restore(eCapture, eCommunications, route.cableCaptureId, route.captureCommunicationsId);
+    // Missing previous default IDs cannot be treated as a successful restore.
+    if (IsAudioRoutedToCable(route)) success = false;
+    if (!success && detail.empty())
+        detail = L"One or more Windows playback/recording roles still point to VB-CABLE.";
+    error = success ? L"" : detail;
+    if (success) LogInfo(L"Windows playback and recording defaults restored to their previous roles.");
+    else LogError(L"Windows playback/recording restore failed: " + error);
+    return success;
+}
+
+bool IsAudioRoutedToCable(const AudioRoute& route) {
+    ComPtr<IMMDeviceEnumerator> enumerator;
+    std::wstring ignored;
+    if (!OpenObjects(enumerator, nullptr, ignored)) return false;
+    const auto is = [&](EDataFlow flow, ERole role, const std::wstring& id) {
+        return !id.empty() && DefaultId(enumerator.Get(), flow, role) == id;
+    };
+    return is(eRender, eConsole, route.cableRenderId) ||
+           is(eRender, eMultimedia, route.cableRenderId) ||
+           is(eCapture, eConsole, route.cableCaptureId) ||
+           is(eCapture, eMultimedia, route.cableCaptureId) ||
+           is(eCapture, eCommunications, route.cableCaptureId);
 }
 } // namespace audioptt
