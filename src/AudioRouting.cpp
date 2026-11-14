@@ -1,6 +1,7 @@
 #include "AudioRouting.h"
 #include <windows.h>
 #include <mmdeviceapi.h>
+#include <audioclient.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <wrl/client.h>
 #include <algorithm>
