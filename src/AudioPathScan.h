@@ -10,6 +10,11 @@ struct AudioPathScanResult {
     double micRms = 0.0;
     double cableRms = 0.0;
     double speakerRms = 0.0;
+    // First ~300 ms before the known test tone starts. Useful when
+    // browser narration is already playing on one endpoint.
+    double micBaselineRms = 0.0;
+    double cableBaselineRms = 0.0;
+    double speakerBaselineRms = 0.0;
     double cableToneAmplitude = 0.0;
     double speakerToneAmplitude = 0.0;
     std::wstring summary;
