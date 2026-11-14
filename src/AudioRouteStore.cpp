@@ -22,7 +22,9 @@ bool ReadString(HKEY key, const wchar_t* name, std::wstring& value) {
 
 bool SaveRecoveryRoute(const AudioRoute& route, std::wstring& error) {
     if (route.consoleId.empty() || route.multimediaId.empty() ||
-        route.physicalOutputId.empty() || route.cableRenderId.empty()) {
+        route.physicalOutputId.empty() || route.cableRenderId.empty() ||
+        route.captureConsoleId.empty() || route.captureMultimediaId.empty() ||
+        route.captureCommunicationsId.empty() || route.cableCaptureId.empty()) {
         error = L"Cannot save recovery settings: audio device IDs are missing.";
         return false;
     }
@@ -36,7 +38,11 @@ bool SaveRecoveryRoute(const AudioRoute& route, std::wstring& error) {
     const bool okay = WriteString(key, L"Console", route.consoleId) &&
                       WriteString(key, L"Multimedia", route.multimediaId) &&
                       WriteString(key, L"Physical", route.physicalOutputId) &&
-                      WriteString(key, L"Cable", route.cableRenderId);
+                      WriteString(key, L"Cable", route.cableRenderId) &&
+                      WriteString(key, L"MicConsole", route.captureConsoleId) &&
+                      WriteString(key, L"MicMultimedia", route.captureMultimediaId) &&
+                      WriteString(key, L"MicCommunications", route.captureCommunicationsId) &&
+                      WriteString(key, L"CableMic", route.cableCaptureId);
     RegCloseKey(key);
     if (!okay) {
         ClearRecoveryRoute();
@@ -56,6 +62,15 @@ bool LoadRecoveryRoute(AudioRoute& route) {
                       ReadString(key, L"Multimedia", saved.multimediaId) &&
                       ReadString(key, L"Physical", saved.physicalOutputId) &&
                       ReadString(key, L"Cable", saved.cableRenderId);
+    // Old builds only changed playback defaults, so their recovery records
+    // do not contain microphone fields. Leave those empty and still support
+    // restoring playback after a crash.
+    if (okay) {
+        ReadString(key, L"MicConsole", saved.captureConsoleId);
+        ReadString(key, L"MicMultimedia", saved.captureMultimediaId);
+        ReadString(key, L"MicCommunications", saved.captureCommunicationsId);
+        ReadString(key, L"CableMic", saved.cableCaptureId);
+    }
     RegCloseKey(key);
     if (okay) route = std::move(saved);
     return okay;
