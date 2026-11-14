@@ -35,7 +35,13 @@ bool SaveRecoveryRoute(const AudioRoute& route, std::wstring& error) {
         error = L"Unable to save audio recovery settings to your Windows user profile.";
         return false;
     }
-    const bool okay = WriteString(key, L"Console", route.consoleId) &&
+    // Version 3 never changes Windows recording defaults. Older recovery
+    // snapshots DID change them, so the loader must distinguish formats.
+    const DWORD version = 3;
+    const bool okay =
+                      RegSetValueExW(key, L"RoutingVersion", 0, REG_DWORD,
+                          reinterpret_cast<const BYTE*>(&version), sizeof(version)) == ERROR_SUCCESS &&
+                      WriteString(key, L"Console", route.consoleId) &&
                       WriteString(key, L"Multimedia", route.multimediaId) &&
                       WriteString(key, L"Physical", route.physicalOutputId) &&
                       WriteString(key, L"Cable", route.cableRenderId) &&
@@ -62,14 +68,20 @@ bool LoadRecoveryRoute(AudioRoute& route) {
                       ReadString(key, L"Multimedia", saved.multimediaId) &&
                       ReadString(key, L"Physical", saved.physicalOutputId) &&
                       ReadString(key, L"Cable", saved.cableRenderId);
-    // Old builds only changed playback defaults, so their recovery records
-    // do not contain microphone fields. Leave those empty and still support
-    // restoring playback after a crash.
+    // Older builds either changed playback only or both playback and
+    // recording defaults. Missing recording keys are allowed on recovery.
     if (okay) {
         ReadString(key, L"MicConsole", saved.captureConsoleId);
         ReadString(key, L"MicMultimedia", saved.captureMultimediaId);
         ReadString(key, L"MicCommunications", saved.captureCommunicationsId);
         ReadString(key, L"CableMic", saved.cableCaptureId);
+        DWORD version = 0;
+        DWORD size = sizeof(version);
+        const bool newRoute = RegGetValueW(key, nullptr, L"RoutingVersion",
+                               RRF_RT_REG_DWORD, nullptr, &version, &size) == ERROR_SUCCESS
+                               && version >= 3;
+        saved.restoreLegacyCaptureRoles = !newRoute && !saved.cableCaptureId.empty()
+                && !saved.captureCommunicationsId.empty();
     }
     RegCloseKey(key);
     if (okay) route = std::move(saved);
