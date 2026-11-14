@@ -435,6 +435,17 @@ void StartFullScan(HWND hwnd) {
                     L"AudioPTT - Full Signal Scan", MB_OK | MB_ICONERROR);
         return;
     }
+    audioptt::LogInfo(L"FULL SCAN device snapshot: Windows mic=" +
+                      snapshot.microphone.name +
+                      L"; Windows default output=" + snapshot.consoleOutput.name +
+                      L"; Windows media output=" + snapshot.multimediaOutput.name +
+                      L"; Communications output=" + snapshot.communicationsOutput.name);
+    audioptt::LogInfo(L"FULL SCAN device snapshot: CABLE Input render=" +
+                      snapshot.cableRender.name + L" (" + snapshot.cableRender.id +
+                      L"); CABLE Output capture=" + snapshot.cableCapture.name +
+                      L" (" + snapshot.cableCapture.id + L")");
+    audioptt::LogInfo(L"FULL SCAN physical output endpoint ID=" +
+                      engine.PhysicalOutputId());
     if (MessageBoxW(hwnd,
         L"Full Signal Scan runs for about 4 seconds.\n\n"
         L"It injects a quiet 997-Hz tone into CABLE Input while measuring "
