@@ -2,7 +2,7 @@
 
 A small native C++/Win32 application for switching Discord's input between your microphone and desktop audio without OBS. Requires VB-CABLE for the prototype.
 
-> **Experimental development build.** Routing is implemented in source, but Windows compilation, hardware behavior, and recovery have not yet been verified. In particular, this version changes the Windows default playback device while Broadcast is on.
+> **Experimental development build.** The app has compiled and the basic microphone/Broadcast device transitions were observed on Windows, but routing, echo recovery, and new diagnostics are not yet fully validated. Broadcast temporarily changes the Windows default playback device.
 
 ## Open in Visual Studio
 
@@ -38,7 +38,7 @@ No microphone audio samples, recordings or process paths are saved or uploaded. 
 
 ### Echo Test (diagnostic only)
 
-With **Broadcast OFF**, click **Echo Test** on the Main tab. The app asks for confirmation, then plays a low-level A-B-A tone directly into the VB-CABLE playback endpoint (**CABLE Input**) while simultaneously capturing a few seconds of **WASAPI loopback from the saved physical speakers**. It does not enable microphone monitoring, change Windows default devices, or send data off the PC.
+With **Broadcast OFF**, click **Echo Test** on the Main tab. For a meaningful comparison of microphone echo, run it once with Discord open and again after fully closing Discord (including background desktop processes or browser tabs). The app asks for confirmation, then plays a low-level A-B-A tone directly into the VB-CABLE playback endpoint (**CABLE Input**) while simultaneously capturing a few seconds of **WASAPI loopback from the saved physical speakers**. It does not enable microphone monitoring, change Windows default devices, or send data off the PC.
 
 The app compares three frequency-specific tone windows against the physical speaker recording. If the pattern reappears there, it logs an **ECHO DETECTED** warning and opens the Logs tab. That indicates some external monitoring/playback path is bringing VB-CABLE's outgoing signal back to the speakers (for example Discord's mic test or Windows' `Listen to this device`). The test cannot identify which program created the path.
 
@@ -52,7 +52,7 @@ The app compares three frequency-specific tone windows against the physical spea
 | On | Unchecked | Desktop audio routed to VB-CABLE | Silent for apps following Windows default |
 | On | Checked | Desktop audio routed to VB-CABLE | Also copied to physical speakers |
 
-**Monitor controls only local playback. It never disables sending PC audio to Discord.** The microphone is not mixed in during Broadcast. Discord's inbound voice should be sent directly to the physical output, not the cable.
+**Monitor is checked by default** so you can hear read-aloud audio while broadcasting. It controls only local PC-audio playback and never changes what is sent to Discord. In normal microphone mode, AudioPTT does **not** monitor or play back your own microphone. The microphone is not mixed in during Broadcast. Discord's inbound voice should be sent directly to the physical output, not the cable.
 
 ## Test setup
 
