@@ -11,4 +11,18 @@ struct DeviceInfo {
     bool isDefault = false;
 };
 std::vector<DeviceInfo> EnumerateDevices();
+struct EndpointDetail {
+    std::wstring name;
+    std::wstring id;
+    bool Present() const { return !id.empty(); }
+};
+struct DeviceSnapshot {
+    EndpointDetail consoleOutput;
+    EndpointDetail multimediaOutput;
+    EndpointDetail communicationsOutput;
+    EndpointDetail microphone;
+    EndpointDetail cableRender;  // CABLE Input (audio supplied by AudioPTT)
+    EndpointDetail cableCapture; // CABLE Output (select in Discord)
+};
+DeviceSnapshot ReadDeviceSnapshot();
 } // namespace audioptt
