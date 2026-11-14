@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cwctype>
 #include <deque>
 #include <future>
 #include <stdexcept>
@@ -23,14 +24,14 @@ struct ComScope {
     HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     ~ComScope() { if (SUCCEEDED(hr)) CoUninitialize(); }
 };
-std::wstring Hex(HRESULT hr) {
-    wchar_t buf[32]{};
-    swprintf_s(buf, L"0x%08X", static_cast<unsigned>(hr));
-    return buf;
-}
 void Require(HRESULT hr, const wchar_t* operation) {
-    if (FAILED(hr)) throw std::runtime_error("Windows audio operation failed"); 
-    (void)operation;
+    if (FAILED(hr)) {
+        wchar_t message[256]{};
+        swprintf_s(message, L"%ls failed (HRESULT 0x%08X)", operation,
+                   static_cast<unsigned>(hr));
+        std::wstring wide(message);
+        throw std::runtime_error(std::string(wide.begin(), wide.end()));
+    }
 }
 std::wstring Name(IMMDevice* device) {
     ComPtr<IPropertyStore> properties;
