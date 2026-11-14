@@ -15,6 +15,7 @@
 #include "Diagnostics.h"
 #include "AudioEchoTest.h"
 #include "AudioSample.h"
+#include "AudioPathScan.h"
 #include "AudioSessionDiagnostics.h"
 
 namespace {
@@ -28,6 +29,8 @@ constexpr int kTabs = 110;
 constexpr int kEchoTest = 111;
 constexpr int kInspectSessions = 112;
 constexpr int kSampleAudio = 113;
+constexpr int kFullScan = 114;
+constexpr UINT kFullScanComplete = WM_APP + 32;
 constexpr UINT kSampleAudioComplete = WM_APP + 31;
 constexpr UINT kEchoTestComplete = WM_APP + 30;
 constexpr UINT_PTR kStartupTimer = 201;
@@ -44,12 +47,17 @@ HWND logEdit = nullptr;
 HWND sessionScanLabel = nullptr;
 HWND echoButton = nullptr;
 HWND sampleButton = nullptr;
+HWND scanButton = nullptr;
 HWND retryButton = nullptr;
 std::thread echoThread;
 std::mutex echoMutex;
 audioptt::EchoTestResult echoResult;
 bool echoRunning = false;
 bool sampleRunning = false;
+bool scanRunning = false;
+std::thread scanThread;
+std::mutex scanMutex;
+audioptt::AudioPathScanResult scanResult;
 std::atomic<bool> sampleCancel{false};
 std::thread sampleThread;
 std::mutex sampleMutex;
@@ -149,11 +157,17 @@ void Refresh() {
     // speaker monitor checkbox does not alter whether Discord receives audio.
     if (sampleButton)
         EnableWindow(sampleButton, engine.Broadcasting() && engine.Running() &&
-                                  !echoRunning && !sampleRunning);
+                                  !echoRunning && !sampleRunning && !scanRunning);
+    if (scanButton)
+        EnableWindow(scanButton, engine.Running() && !echoRunning && !sampleRunning && !scanRunning);
+    if (echoButton)
+        EnableWindow(echoButton, engine.Running() && !echoRunning && !sampleRunning && !scanRunning);
+    if (retryButton)
+        EnableWindow(retryButton, !echoRunning && !sampleRunning && !scanRunning);
     if (broadcastButton)
-        EnableWindow(broadcastButton, !echoRunning && !sampleRunning);
+        EnableWindow(broadcastButton, !echoRunning && !sampleRunning && !scanRunning);
     if (monitorCheck)
-        EnableWindow(monitorCheck, !echoRunning && !sampleRunning);
+        EnableWindow(monitorCheck, !echoRunning && !sampleRunning && !scanRunning);
     if (broadcastButton)
         SetWindowTextW(broadcastButton, engine.Broadcasting() ?
                        L"STOP BROADCAST" : L"BROADCAST PC AUDIO");
@@ -317,7 +331,7 @@ void SetupAudio(HWND hwnd) {
     Refresh();
 }
 void Toggle() {
-    if (echoRunning || sampleRunning) {
+    if (echoRunning || sampleRunning || scanRunning) {
         audioptt::LogWarning(L"Broadcast toggle ignored while audio diagnostic or sample is playing.");
         return;
     }
@@ -336,7 +350,7 @@ void Toggle() {
     Refresh();
 }
 void StartEchoTest(HWND hwnd) {
-    if (echoRunning || sampleRunning) return;
+    if (echoRunning || sampleRunning || scanRunning) return;
     if (engine.Broadcasting()) {
         MessageBoxW(hwnd,
             L"Run this diagnostic with Broadcast OFF, so a VB-CABLE speaker return is unexpected.",
@@ -378,7 +392,7 @@ void StartEchoTest(HWND hwnd) {
     });
 }
 void StartSampleAudio(HWND hwnd) {
-    if (sampleRunning || echoRunning) return;
+    if (sampleRunning || echoRunning || scanRunning) return;
     if (!engine.Broadcasting() || !engine.Running() || engine.CableRenderId().empty()) {
         audioptt::LogWarning(L"Sample Audio blocked: Broadcast must be ON and route ready.");
         MessageBoxW(hwnd, L"Turn on BROADCAST PC AUDIO first.",
@@ -403,6 +417,53 @@ void StartSampleAudio(HWND hwnd) {
             sampleError = error;
         }
         PostMessageW(hwnd, kSampleAudioComplete, 0, 0);
+    });
+}
+void StartFullScan(HWND hwnd) {
+    if (scanRunning || echoRunning || sampleRunning) return;
+    if (!engine.Running()) {
+        MessageBoxW(hwnd, L"AudioPTT must finish starting before a full scan.",
+                    L"AudioPTT - Full Signal Scan", MB_OK | MB_ICONWARNING);
+        return;
+    }
+    audioptt::DeviceSnapshot snapshot;
+    try {
+        snapshot = audioptt::ReadDeviceSnapshot();
+    } catch (...) {
+        audioptt::LogError(L"Full path scan: Windows endpoint snapshot failed.");
+        MessageBoxW(hwnd, L"Windows audio endpoints unavailable. Inspect Logs.",
+                    L"AudioPTT - Full Signal Scan", MB_OK | MB_ICONERROR);
+        return;
+    }
+    if (MessageBoxW(hwnd,
+        L"Full Signal Scan runs for about 4 seconds.\n\n"
+        L"It injects a quiet 997-Hz tone into CABLE Input while measuring "
+        L"the webcam microphone, CABLE Output, and Realtek speaker loopback.\n\n"
+        L"Other Discord participants may hear the tone. Continue?",
+        L"AudioPTT - Full Signal Scan", MB_OKCANCEL | MB_ICONINFORMATION) != IDOK)
+        return;
+
+    if (scanThread.joinable()) scanThread.join();
+    scanRunning = true;
+    audioptt::LogInfo(L"User requested FULL SIGNAL SCAN. "
+                      L"Discord input should be explicitly set to CABLE Output.");
+    SetWindowTextW(scanButton, L"Scanning signal path...");
+    Refresh();
+    const auto micId = snapshot.microphone.id;
+    const auto cableRenderId = engine.CableRenderId();
+    const auto cableCaptureId = snapshot.cableCapture.id;
+    const auto speakerId = engine.PhysicalOutputId();
+    const bool broadcast = engine.Broadcasting();
+    const bool monitor = engine.Monitor();
+    scanThread = std::thread([hwnd, micId, cableRenderId, cableCaptureId,
+                              speakerId, broadcast, monitor]() {
+        const auto result = audioptt::RunAudioPathScan(
+            micId, cableRenderId, cableCaptureId, speakerId, broadcast, monitor);
+        {
+            std::lock_guard<std::mutex> guard(scanMutex);
+            scanResult = result;
+        }
+        PostMessageW(hwnd, kFullScanComplete, 0, 0);
     });
 }
 void CopyLogs(HWND hwnd) {
@@ -441,8 +502,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         item.pszText = const_cast<LPWSTR>(L"Logs");
         TabCtrl_InsertItem(tabs, 1, &item);
 
-        AddControl(mainControls, L"STATIC", L"AudioPTT  -  Mic / PC broadcast (Discord on CABLE Output)",
-                   WS_VISIBLE, 28, 51, 485, 24, hwnd, instance);
+        AddControl(mainControls, L"STATIC",
+                   L"AudioPTT - Mic / PC broadcast (Discord on CABLE Output)  [Ctrl+Alt+Space]",
+                   WS_VISIBLE, 28, 51, 505, 24, hwnd, instance);
         broadcastButton = AddControl(mainControls, L"BUTTON", L"BROADCAST PC AUDIO",
                    WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON, 28, 78, 495, 55,
                    hwnd, instance, kButton);
@@ -468,8 +530,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
                    WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
                    28, 537, 245, 30, hwnd, instance, kSampleAudio);
         EnableWindow(sampleButton, FALSE);
-        AddControl(mainControls, L"STATIC", L"Hotkey: Ctrl + Alt + Space",
-                   WS_VISIBLE, 290, 545, 230, 20, hwnd, instance);
+        scanButton = AddControl(mainControls, L"BUTTON", L"Full Signal Scan",
+                   WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+                   280, 537, 243, 30, hwnd, instance, kFullScan);
+        EnableWindow(scanButton, FALSE);
 
         logEdit = AddControl(logControls, L"EDIT", L"",
                    WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL |
@@ -532,6 +596,24 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
             return 0;
         }
         break;
+    case kFullScanComplete: {
+        if (scanThread.joinable()) scanThread.join();
+        scanRunning = false;
+        if (scanButton) SetWindowTextW(scanButton, L"Full Signal Scan");
+        audioptt::AudioPathScanResult result;
+        {
+            std::lock_guard<std::mutex> guard(scanMutex);
+            result = scanResult;
+        }
+        Refresh();
+        TabCtrl_SetCurSel(tabs, 1);
+        SetPage(1);
+        RefreshLogs(true);
+        MessageBoxW(hwnd, result.summary.c_str(), L"AudioPTT - Full Signal Scan Results",
+                    MB_OK | (result.completed && result.cableToneDetected ?
+                        MB_ICONINFORMATION : MB_ICONWARNING));
+        return 0;
+    }
     case kSampleAudioComplete: {
         if (sampleThread.joinable()) sampleThread.join();
         sampleRunning = false;
@@ -598,7 +680,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         case kDevices: ShowDevicesInLog(); return 0;
         case kEchoTest: StartEchoTest(hwnd); return 0;
         case kSampleAudio: StartSampleAudio(hwnd); return 0;
-        case kRetry: if (!echoRunning) SetupAudio(hwnd); return 0;
+        case kFullScan: StartFullScan(hwnd); return 0;
+        case kRetry: if (!echoRunning && !sampleRunning && !scanRunning) SetupAudio(hwnd); return 0;
         case kCopyLogs: CopyLogs(hwnd); return 0;
         case kInspectSessions: ShowAudioSessions(true); return 0;
         case kClearLogs: audioptt::ClearLogs(); RefreshLogs(true); return 0;
@@ -609,6 +692,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wp, LPARAM lp) {
         // default audio devices, and don't leave worker threads behind.
         sampleCancel.store(true);
         if (sampleThread.joinable()) sampleThread.join();
+        if (scanThread.joinable()) scanThread.join();
         if (echoThread.joinable()) echoThread.join();
         engine.Stop();
         if (engine.Status().find(L"WARNING: Windows playback defaults were not restored") != std::wstring::npos) {
