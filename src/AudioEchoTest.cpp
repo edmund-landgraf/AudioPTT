@@ -1,5 +1,6 @@
 #include "AudioEchoTest.h"
 #include "Diagnostics.h"
+#include "AudioSessionDiagnostics.h"
 #include <windows.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
@@ -169,9 +170,16 @@ EchoTestResult RunEchoTest(const std::wstring& cableRenderId,
 
         // Start both streams on the same thread. The speaker loopback collects
         // the actual speaker mix, not AudioPTT's own VB-CABLE render packets.
+        LogRenderSessions(L"Echo Test / before tone", physicalRenderId, cableRenderId);
         input.Start();
         output.Start();
         const auto started = std::chrono::steady_clock::now();
+        // Session sampling must not block the audio processing loop.
+        std::jthread probe([physicalRenderId, cableRenderId]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(850));
+            LogRenderSessions(L"Echo Test / while tone active",
+                              physicalRenderId, cableRenderId);
+        });
         while (std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
                < kDurationSeconds) {
             UINT32 packet = 0;
@@ -230,7 +238,21 @@ EchoTestResult RunEchoTest(const std::wstring& cableRenderId,
         // A-B-A is deliberately tested against the wrong frequency in each
         // slot so ordinary speaker/music content is much less likely to
         // trigger a false positive.
+        if (probe.joinable()) probe.join();
+        LogRenderSessions(L"Echo Test / after tone", physicalRenderId, cableRenderId);
+        size_t nonzeroFrames = 0;
+        double sumSquared = 0.0;
+        for (const float value : heard) {
+            sumSquared += static_cast<double>(value) * value;
+            if (std::abs(value) > 0.0001f) ++nonzeroFrames;
+        }
+        LogInfo(L"Echo test speaker capture: RMS=" +
+                std::to_wstring(std::sqrt(sumSquared / heard.size())) +
+                L", nonzero frames=" + std::to_wstring(nonzeroFrames) +
+                L"/" + std::to_wstring(heard.size()) +
+                L", submitted cable frames=" + std::to_wstring(submitted));
         double strongest = 0.0;
+        double foundDelay = -1.0;
         for (double lag = 0.0; lag <= 1.35; lag += 0.025) {
             const double a1 = BandAmplitude(heard, inputRate, lag + 0.065,
                                             0.18, kFirstHz);
@@ -251,6 +273,7 @@ EchoTestResult RunEchoTest(const std::wstring& cableRenderId,
                 a2 > wrongA2 * 1.8) {
                 result.echoDetected = true;
                 result.toneLevel = level;
+                foundDelay = lag;
                 break;
             }
         }
@@ -264,7 +287,11 @@ EchoTestResult RunEchoTest(const std::wstring& cableRenderId,
             result.message = L"No matching test tone detected in speaker loopback. "
                              L"This does not rule out intermittent echo or another playback device.";
         }
-        LogInfo(L"Echo test speaker signature amplitude: " + std::to_wstring(result.toneLevel));
+        LogInfo(L"Echo test speaker signature amplitude: " + std::to_wstring(result.toneLevel) +
+                L", matched lag=" + (foundDelay < 0.0 ? std::wstring(L"not found") :
+                                     std::to_wstring(foundDelay) + L" seconds"));
+        LogInfo(L"Echo test process list is observational. Active PIDs do not identify the "
+                L"audio source with certainty; compare with Discord fully closed.");
         if (result.echoDetected) LogWarning(result.message);
         else LogInfo(result.message);
     } catch (const std::exception& error) {
