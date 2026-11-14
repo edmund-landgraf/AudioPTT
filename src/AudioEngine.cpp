@@ -301,9 +301,9 @@ bool AudioEngine::SetBroadcast(bool enabled, std::wstring& error) {
             return false;
         }
         if (!RouteDesktopToCable(route_, error)) {
-            LogError(L"Broadcast blocked: failed to switch Windows default playback: " + error);
-            // A partially failed device switch may still leave Windows output
-            // on the cable. Never forward the mic into that live desktop mix.
+            LogError(L"Broadcast blocked: failed to switch Windows recording/playback defaults: " + error);
+            // A partially failed switch may leave recording or playback
+            // defaults on the cable. Never start a microphone stream.
             const bool cableActive = IsAudioRoutedToCable(route_);
             broadcasting_.store(cableActive);
             if (!cableActive) {
@@ -312,7 +312,7 @@ bool AudioEngine::SetBroadcast(bool enabled, std::wstring& error) {
                 LaunchWorker(false, ignored);
             } else {
                 healthAlerted_ = false; // Health check will attempt restoration.
-                error += L" Windows may still be sending desktop audio to VB-CABLE.";
+                error += L" Windows recording or playback defaults may still point to VB-CABLE.";
             }
             return false;
         }
@@ -343,9 +343,16 @@ bool AudioEngine::SetBroadcast(bool enabled, std::wstring& error) {
     if (!RestoreDesktopRoute(route_, error)) {
         const bool stillCable = IsAudioRoutedToCable(route_);
         broadcasting_.store(stillCable);
+        // Leave all AudioPTT streams STOPPED if restoration was partial.
+        // In particular, never restart CABLE-to-speaker monitoring while
+        // Windows input/output defaults are in an uncertain state.
         if (stillCable) {
+            LogError(L"Windows still has a VB-CABLE default after STOP. "
+                     L"Local monitor will remain stopped until recovery succeeds.");
+            healthAlerted_ = false; // Periodic health check may retry restore.
+        } else {
             std::wstring ignored;
-            LaunchWorker(true, ignored);
+            LaunchWorker(false, ignored);
         }
         return false;
     }
@@ -401,7 +408,7 @@ bool AudioEngine::CheckHealth(std::wstring& alert) {
 }
 
 void AudioEngine::Stop() {
-    LogInfo(L"Shutting down AudioPTT engine and restoring playback.");
+    LogInfo(L"Shutting down AudioPTT and restoring previous recording/playback defaults.");
     ShutdownWorker();
     if (routeCaptured_) {
         std::wstring error;
@@ -409,7 +416,7 @@ void AudioEngine::Stop() {
             ClearRecoveryRoute();
         } else {
             std::lock_guard lock(statusMutex_);
-            status_ = L"WARNING: Windows playback was not restored: " + error;
+            status_ = L"WARNING: Windows microphone/playback defaults were not restored: " + error;
         }
         routeCaptured_ = false;
     }
